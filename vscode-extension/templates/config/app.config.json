@@ -1,0 +1,32 @@
+{
+  "editor": {
+    "theme": "one-dark",
+    "tabSize": 2,
+    "autoSave": false
+  },
+  "agentBridge": {
+    "responsePollIntervalMs": 500,
+    "responseStableCount": 3,
+    "maxContextFiles": 5,
+    "autoApply": true
+  },
+  "fileBridge": {
+    "workspaceRoot": "",
+    "commandFormat": "structured"
+  },
+  "toolPermissions": {
+    "read_file": "allow",
+    "read_file_range": "allow",
+    "count_file_rows": "allow",
+    "write_file": "allow",
+    "append_file": "allow",
+    "edit_file_range": "allow",
+    "delete_file": "allow",
+    "delete_path": "allow",
+    "move_path": "allow",
+    "copy_path": "allow",
+    "ls": "allow",
+    "grep": "allow",
+    "run_powershell": "ask"
+  }
+}

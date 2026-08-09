@@ -1,0 +1,11 @@
+{
+  "name": "agent-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "静默 WebView2 Agent Host。复用 editor-app 的 webview_bridge，经 AGENT_HOST=1 启动。",
+  "scripts": {
+    "start": "node ./run-host.mjs",
+    "build": "pnpm --filter editor-app exec tauri build",
+    "dev": "node ./run-host.mjs --dev"
+  }
+}

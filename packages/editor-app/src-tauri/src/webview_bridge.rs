@@ -1,0 +1,1637 @@
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
+use serde_json::json;
+use tauri::webview::{NewWindowFeatures, NewWindowResponse, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WindowEvent};
+
+/// 会话 DOM 抓取由站点 bridge adapter.captureConversation 提供，无则空数组
+const CONVERSATION_CAPTURE_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.captureConversation)return [];var list=window.__agentEditorBridge.captureConversation();return Array.isArray(list)?list:[];}catch(e){return[];}})()"#;
+
+const BRIDGE_CHECK_EXPR: &str = "Boolean(window.__agentEditorBridge)";
+
+const BRIDGE_RESPONSE_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge)return JSON.stringify({error:"no bridge"});return JSON.stringify(window.__agentEditorBridge.getLatestResponseMeta());}catch(e){return JSON.stringify({error:String(e)});}})()"#;
+
+const BRIDGE_IS_LOADING_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.isLoading)return "false";return window.__agentEditorBridge.isLoading()?"true":"false";}catch(e){return "false";}})()"#;
+
+const BRIDGE_COPY_DEBUG_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge)return JSON.stringify({error:"no bridge"});return JSON.stringify(window.__agentEditorBridge.getCopyToolDebug());}catch(e){return JSON.stringify({error:String(e)});}})()"#;
+
+const BRIDGE_SCHEDULE_COPY_EXPR: &str = r#"(function(){try{if(window.__agentEditorBridge&&window.__agentEditorBridge.scheduleToolCopyRead)window.__agentEditorBridge.scheduleToolCopyRead();return "ok";}catch(e){return String(e);}})()"#;
+
+const BRIDGE_DRAIN_COMM_LOGS_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.drainPendingCommLogs)return "[]";return JSON.stringify(window.__agentEditorBridge.drainPendingCommLogs());}catch(e){return "[]";}})()"#;
+
+const BRIDGE_DRAIN_CHAT_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.drainPendingChatMessages)return "[]";return JSON.stringify(window.__agentEditorBridge.drainPendingChatMessages());}catch(e){return "[]";}})()"#;
+
+const BRIDGE_TAKE_RESET_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.takePendingResetBaseline)return "false";return window.__agentEditorBridge.takePendingResetBaseline()?"true":"false";}catch(e){return "false";}})()"#;
+
+const DEBUG_DOM_EXPR: &str = r#"(function(){try{var items=document.querySelectorAll('[data-virtual-list-item-key]');var sample=[];for(var i=0;i<items.length;i++){var item=items[i];sample.push({key:item.getAttribute('data-virtual-list-item-key'),html:item.outerHTML.substring(0,1500)});}var input=null;var inputText='';try{var list=document.querySelectorAll('[contenteditable="true"], textarea');var best=null;var maxY=-1;for(var i=0;i<list.length;i++){var el=list[i];var r=el.getBoundingClientRect();if(r.width>0&&r.height>0&&r.bottom>maxY){maxY=r.bottom;best=el;}}input=best;inputText=input?String(input.innerText||input.value||'').trim().substring(0,200):'';}catch(e){}var sendBtn=null;var sendDisabled=null;try{var btns=document.querySelectorAll('button');for(var j=btns.length-1;j>=0;j--){var b=btns[j];if(b.offsetParent===null)continue;var label=(b.getAttribute('aria-label')||'')+(b.textContent||'');if(/发送|send/i.test(label)){sendBtn=label.trim().substring(0,80);sendDisabled=!!b.disabled;break;}}}catch(e){}var bodyText=document.body?String(document.body.innerText||'').trim().substring(0,500):'';return{url:location.href,bridge:Boolean(window.__agentEditorBridge),virtualItemCount:items.length,title:document.title,bodyLength:document.body?document.body.innerHTML.length:0,sampleItems:sample,inputText:inputText,sendBtn:sendBtn,sendDisabled:sendDisabled,bodyText:bodyText};}catch(e){return{error:String(e)};}})()"#;
+
+const AGENT_INSPECT_EXPR: &str = r#"(function(){try{var inputs=[];document.querySelectorAll('textarea,[contenteditable="true"],[role="textbox"]').forEach(function(el){var r=el.getBoundingClientRect();inputs.push({tag:el.tagName,ph:(el.placeholder||'').slice(0,40),w:Math.round(r.width),h:Math.round(r.height),b:Math.round(r.bottom),cls:String(el.className||'').slice(0,80)});});var btns=[];document.querySelectorAll('button,[role="button"]').forEach(function(b){if(b.offsetParent===null)return;var label=((b.getAttribute('aria-label')||'')+(b.textContent||'')).trim().slice(0,50);if(/发送|send|submit|提交/i.test(label)||b.type==='submit')btns.push({label:label,disabled:!!b.disabled,cls:String(b.className||'').slice(0,80)});});var blocks=[];document.querySelectorAll('[class*="dialog"] [class*="item"],[class*="message"],[class*="chat"],[class*="answer"],[class*="markdown"],[class*="bubble"]').forEach(function(el,i){var t=(el.innerText||'').trim();if(t.length>15&&t.length<2000)blocks.push({i:i,len:t.length,preview:t.slice(0,120),cls:String(el.className||'').slice(0,80)});});return{inputCount:inputs.length,inputs:inputs.slice(-8),btns:btns.slice(-10),blocks:blocks.slice(-8)};}catch(e){return{error:String(e)};}})()"#;
+
+pub struct WebviewState {
+    pub webviews: Mutex<HashMap<String, bool>>,
+    pub responses: Mutex<HashMap<String, String>>,
+    pub peek_cache: Mutex<HashMap<String, String>>,
+    pub peek_key_cache: Mutex<HashMap<String, i64>>,
+    pub injection_scripts: Mutex<HashMap<String, String>>,
+    sync_states: Mutex<HashMap<String, AgentSyncState>>,
+    pub active_syncs: Mutex<HashSet<String>>,
+    pub visible_labels: Mutex<HashSet<String>>,
+    eval_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl Default for WebviewState {
+    fn default() -> Self {
+        Self {
+            webviews: Mutex::new(HashMap::new()),
+            responses: Mutex::new(HashMap::new()),
+            peek_cache: Mutex::new(HashMap::new()),
+            peek_key_cache: Mutex::new(HashMap::new()),
+            injection_scripts: Mutex::new(HashMap::new()),
+            sync_states: Mutex::new(HashMap::new()),
+            active_syncs: Mutex::new(HashSet::new()),
+            visible_labels: Mutex::new(HashSet::new()),
+            eval_locks: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+fn eval_lock_for(state: &WebviewState, label: &str) -> Arc<Mutex<()>> {
+    let mut locks = state
+        .eval_locks
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    locks
+        .entry(label.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn is_webview_visible(state: &WebviewState, label: &str) -> bool {
+    // Agent Host 静默模式：隐藏窗仍需轮询 bridge
+    if crate::is_agent_host_mode() {
+        return true;
+    }
+    state
+        .visible_labels
+        .lock()
+        .map(|visible| visible.contains(label))
+        .unwrap_or(true)
+}
+
+fn agent_webview_alive(app: &AppHandle, label: &str) -> bool {
+    if crate::is_agent_host_mode() {
+        app.get_webview_window(label).is_some()
+    } else {
+        app.get_webview(label).is_some()
+    }
+}
+
+fn mark_agent_webview_gone(app: &AppHandle, label: &str) {
+    let state = app.state::<WebviewState>();
+    if let Ok(mut webviews) = state.webviews.lock() {
+        webviews.remove(label);
+    }
+    if let Ok(mut visible) = state.visible_labels.lock() {
+        visible.remove(label);
+    }
+    let agent_id = label
+        .strip_prefix("agent-")
+        .unwrap_or(label)
+        .to_string();
+    let _ = app.emit(
+        "agent-webview-closed",
+        json!({ "agentId": agent_id, "label": label }),
+    );
+}
+
+fn attach_host_window_close_cleanup(app: &AppHandle, window: &tauri::WebviewWindow, label: &str) {
+    let app_for_event = app.clone();
+    let label_for_event = label.to_string();
+    window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Destroyed) {
+            mark_agent_webview_gone(&app_for_event, &label_for_event);
+        }
+    });
+}
+
+struct AgentSyncState {
+    emitted_keys: HashSet<i64>,
+    emitted_texts: HashMap<i64, String>,
+    stable_tracker: HashMap<i64, (String, Instant)>,
+    seeded: bool,
+    bridge_baseline: String,
+    last_emitted_bridge_text: String,
+    bridge_stable_tracker: Option<(String, Instant)>,
+    last_logged_tool_capture: String,
+}
+
+impl AgentSyncState {
+    fn new() -> Self {
+        Self {
+            emitted_keys: HashSet::new(),
+            emitted_texts: HashMap::new(),
+            stable_tracker: HashMap::new(),
+            seeded: false,
+            bridge_baseline: String::new(),
+            last_emitted_bridge_text: String::new(),
+            bridge_stable_tracker: None,
+            last_logged_tool_capture: String::new(),
+        }
+    }
+
+    fn on_send(&mut self, baseline: String) {
+        self.bridge_baseline = baseline;
+        self.bridge_stable_tracker = None;
+        self.last_logged_tool_capture.clear();
+    }
+}
+
+fn is_incomplete_agent_message(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.contains("BEGIN_TOOL") && trimmed.len() < 120
+}
+
+fn agent_emit_stable_ms(text: &str, base_ms: u64) -> u64 {
+    if is_incomplete_agent_message(text) {
+        base_ms.saturating_mul(3)
+    } else if text.contains("BEGIN_TOOL") {
+        base_ms.saturating_add(600)
+    } else {
+        base_ms
+    }
+}
+
+fn should_skip_sync_message(sync_state: &AgentSyncState, message: &ChatMessage) -> bool {
+    if !sync_state.emitted_keys.contains(&message.key) {
+        return false;
+    }
+    let Some(prev) = sync_state.emitted_texts.get(&message.key) else {
+        return true;
+    };
+    if prev == &message.text {
+        return true;
+    }
+    if message.text.contains("BEGIN_TOOL") && !prev.contains("BEGIN_TOOL") {
+        return false;
+    }
+    message.text.len() <= prev.len().saturating_add(40)
+}
+
+#[derive(Debug, Clone)]
+struct ChatMessage {
+    key: i64,
+    role: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct WebviewBounds {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// 与 VS Code 扩展一致：%APPDATA%\agent-editor
+fn user_config_root() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("agent-editor");
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        return PathBuf::from(home)
+            .join("AppData")
+            .join("Roaming")
+            .join("agent-editor");
+    }
+    PathBuf::from("agent-editor")
+}
+
+fn copy_if_missing(src: &PathBuf, dest: &PathBuf) {
+    if dest.exists() || !src.exists() {
+        return;
+    }
+    if let Some(parent) = dest.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::copy(src, dest);
+}
+
+fn seed_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    // 开发：仓库根
+    let mut dir = std::env::current_dir().unwrap_or_default();
+    for _ in 0..8 {
+        if dir.join("config").join("app.config.json").exists()
+            || dir.join("scripts").join("bridge-default.js").exists()
+        {
+            roots.push(dir.clone());
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        roots.push(resource_dir);
+    }
+    roots
+}
+
+/// 首次启动：从模板填充用户配置目录（不含站点 agents）
+fn ensure_user_config(app: &AppHandle) -> PathBuf {
+    let root = user_config_root();
+    let _ = fs::create_dir_all(root.join("config"));
+    let _ = fs::create_dir_all(root.join("scripts"));
+
+    for seed in seed_roots(app) {
+        copy_if_missing(
+            &seed.join("config").join("app.config.json"),
+            &root.join("config").join("app.config.json"),
+        );
+        let agents_dest = root.join("config").join("agents.json");
+        if !agents_dest.exists() {
+            let from_agents = seed.join("config").join("agents.json");
+            let from_template = seed.join("config").join("_agents-template.json");
+            if from_agents.exists() {
+                copy_if_missing(&from_agents, &agents_dest);
+            } else {
+                copy_if_missing(&from_template, &agents_dest);
+            }
+        }
+        copy_if_missing(
+            &seed.join("config").join("_agents-template.json"),
+            &root.join("config").join("_agents-template.json"),
+        );
+        copy_if_missing(
+            &seed.join("scripts").join("bridge-default.js"),
+            &root.join("scripts").join("bridge-default.js"),
+        );
+        copy_if_missing(
+            &seed.join("scripts").join("_bridge-template.js"),
+            &root.join("scripts").join("_bridge-template.js"),
+        );
+    }
+    root
+}
+
+fn config_search_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    roots.push(ensure_user_config(app));
+
+    // 开发时仓库根（便于 private sync 到工作区后调试）
+    let mut dir = std::env::current_dir().unwrap_or_default();
+    for _ in 0..8 {
+        if dir.join("config").join("agents.json").exists()
+            || dir.join("config").join("app.config.json").exists()
+        {
+            roots.push(dir.clone());
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+            if let Some(parent) = dir.parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        roots.push(resource_dir);
+    }
+
+    roots
+}
+
+fn resolve_config_path(app: &AppHandle, relative_path: &str) -> Result<PathBuf, String> {
+    let mut tried = Vec::new();
+    for root in config_search_roots(app) {
+        let path = root.join(relative_path);
+        if path.exists() {
+            return Ok(path);
+        }
+        tried.push(path.display().to_string());
+    }
+    Err(format!(
+        "Config file not found: {} (tried: {})",
+        relative_path,
+        tried.join(" | ")
+    ))
+}
+
+#[tauri::command]
+pub fn get_user_config_root(app: AppHandle) -> Result<String, String> {
+    Ok(ensure_user_config(&app).display().to_string())
+}
+
+#[tauri::command]
+pub fn read_config_file(app: AppHandle, relative_path: String) -> Result<String, String> {
+    let path = resolve_config_path(&app, &relative_path)?;
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn write_config_file(
+    app: AppHandle,
+    relative_path: String,
+    content: String,
+) -> Result<(), String> {
+    let path = match resolve_config_path(&app, &relative_path) {
+        Ok(p) => p,
+        Err(_) => ensure_user_config(&app).join(&relative_path),
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn read_bridge_script(app: AppHandle, relative_path: String) -> Result<String, String> {
+    let path = resolve_config_path(&app, &relative_path)?;
+    fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+fn agent_data_dir(app: &AppHandle, agent_id: &str) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("agent-webviews")
+        .join(agent_id);
+    fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    Ok(base)
+}
+
+fn build_injection_script(template_script: &str, bridge_script: &str) -> String {
+    format!(
+        r#"
+(function() {{
+  {template}
+  {bridge}
+}})();
+"#,
+        template = template_script,
+        bridge = bridge_script
+    )
+}
+
+fn eval_webview_json(
+    app: &AppHandle,
+    label: &str,
+    expr: &str,
+) -> Result<String, String> {
+    let state = app.state::<WebviewState>();
+    let lock = eval_lock_for(&state, label);
+    let _guard = lock
+        .lock()
+        .map_err(|e| format!("eval lock poisoned on {label}: {e}"))?;
+
+    let label = label.to_string();
+    let label_for_err = label.clone();
+    let expr = expr.to_string();
+    let app = app.clone();
+    let (result_tx, result_rx) = mpsc::channel::<String>();
+
+    app.clone()
+        .run_on_main_thread(move || {
+            if let Some(webview) = app.get_webview(&label) {
+                let callback_tx = result_tx.clone();
+                if webview
+                    .eval_with_callback(expr, move |value| {
+                        let _ = callback_tx.send(value);
+                    })
+                    .is_err()
+                {
+                    let _ = result_tx.send(String::new());
+                }
+            } else {
+                let _ = result_tx.send(String::new());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|_| format!("eval result timeout on webview: {}", label_for_err))
+}
+
+fn parse_conversation_messages(raw: &str) -> Vec<ChatMessage> {
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
+        return Vec::new();
+    }
+
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+
+    let mut messages = Vec::new();
+    for item in items {
+        let key = item.get("key").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if key < 0 {
+            continue;
+        }
+        let role = item
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let text = item
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if text.is_empty() {
+            continue;
+        }
+        messages.push(ChatMessage { key, role, text });
+    }
+
+    messages.sort_by_key(|m| m.key);
+    messages
+}
+
+async fn async_delay(ms: u64) {
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+}
+
+fn emit_agent_chat_event(
+    app: &AppHandle,
+    agent_id: &str,
+    role: &str,
+    key: i64,
+    text: &str,
+) -> Result<(), String> {
+    let payload = serde_json::json!({
+        "agentId": agent_id,
+        "role": role,
+        "key": key,
+        "text": text
+    });
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .emit("agent-chat-message", payload)
+            .map_err(|e| e.to_string())
+    } else {
+        app.emit("agent-chat-message", payload)
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+pub async fn emit_bridge_comm_log(
+    app: AppHandle,
+    agent_id: String,
+    direction: String,
+    content: String,
+) -> Result<(), String> {
+    emit_bridge_comm_log_inner(&app, &agent_id, &direction, &content);
+    Ok(())
+}
+
+fn emit_bridge_comm_log_inner(app: &AppHandle, agent_id: &str, direction: &str, content: &str) {
+    let payload = serde_json::json!({
+        "agentId": agent_id,
+        "direction": direction,
+        "content": content,
+    });
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("bridge-comm-log", payload);
+    } else {
+        let _ = app.emit("bridge-comm-log", payload);
+    }
+}
+
+fn flush_bridge_comm_logs(app: &AppHandle, label: &str, agent_id: &str) {
+    let raw =
+        eval_webview_json(app, label, BRIDGE_DRAIN_COMM_LOGS_EXPR).unwrap_or_else(|_| "[]".to_string());
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    for item in items {
+        let direction = item
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("copy");
+        let content = item.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if content.is_empty() {
+            continue;
+        }
+        emit_bridge_comm_log_inner(app, agent_id, direction, content);
+    }
+}
+
+fn flush_bridge_chat_messages(app: &AppHandle, label: &str, agent_id: &str) {
+    let raw =
+        eval_webview_json(app, label, BRIDGE_DRAIN_CHAT_EXPR).unwrap_or_else(|_| "[]".to_string());
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    for item in items {
+        let role = item.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+        let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        if text.is_empty() {
+            continue;
+        }
+        let key = item.get("key").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let _ = emit_agent_chat_event(app, agent_id, role, key, text);
+    }
+}
+
+fn flush_bridge_pending_reset(app: &AppHandle, label: &str, agent_id: &str) {
+    let raw =
+        eval_webview_json(app, label, BRIDGE_TAKE_RESET_EXPR).unwrap_or_else(|_| "false".to_string());
+    if raw.trim() == "true" {
+        reset_bridge_baseline_on_send(app, label, agent_id);
+    }
+}
+
+fn flush_bridge_queues(app: &AppHandle, label: &str, agent_id: &str) {
+    flush_bridge_pending_reset(app, label, agent_id);
+    flush_bridge_comm_logs(app, label, agent_id);
+    flush_bridge_chat_messages(app, label, agent_id);
+}
+
+fn log_tool_capture_if_new(app: &AppHandle, agent_id: &str, source: &str, text: &str) {
+    if !text.contains("BEGIN_TOOL") {
+        return;
+    }
+    let state = app.state::<WebviewState>();
+    let mut sync_states = match state.sync_states.lock() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let sync_state = match sync_states.get_mut(agent_id) {
+        Some(value) => value,
+        None => return,
+    };
+    if sync_state.last_logged_tool_capture == text {
+        return;
+    }
+    sync_state.last_logged_tool_capture = text.to_string();
+    let content = format!(
+        "status: captured\nsource: {source}\nlength: {}\ntext:\n{text}",
+        text.len()
+    );
+    emit_bridge_comm_log_inner(app, agent_id, "copy", &content);
+}
+
+fn emit_chat_message(app: &AppHandle, agent_id: &str, message: &ChatMessage) {
+    if message.role == "agent" && message.text.contains("BEGIN_TOOL") {
+        log_tool_capture_if_new(app, agent_id, "conversation", &message.text);
+    }
+    let _ = emit_agent_chat_event(app, agent_id, &message.role, message.key, &message.text);
+}
+
+struct BridgeResponseMeta {
+    key: i64,
+    text: String,
+    loading: bool,
+}
+
+fn parse_bridge_response_meta(raw: &str) -> BridgeResponseMeta {
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
+        return BridgeResponseMeta {
+            key: -1,
+            text: String::new(),
+            loading: false,
+        };
+    }
+
+    let Some(value) = parse_json_value_deep(raw) else {
+        return BridgeResponseMeta {
+            key: -1,
+            text: String::new(),
+            loading: false,
+        };
+    };
+
+    if value.get("error").is_some() {
+        return BridgeResponseMeta {
+            key: -1,
+            text: String::new(),
+            loading: false,
+        };
+    }
+
+    let text = value
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let key = value.get("key").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let loading = value
+        .get("loading")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    BridgeResponseMeta { key, text, loading }
+}
+
+fn parse_json_value_deep(raw: &str) -> Option<serde_json::Value> {
+    let mut current = raw.trim().to_string();
+    for _ in 0..5 {
+        let value = serde_json::from_str::<serde_json::Value>(&current).ok()?;
+        if let serde_json::Value::String(inner) = value {
+            let trimmed = inner.trim();
+            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                current = trimmed.to_string();
+                continue;
+            }
+            return Some(serde_json::Value::String(inner));
+        }
+        return Some(value);
+    }
+    None
+}
+
+fn has_new_bridge_text(baseline: &str, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if baseline.is_empty() {
+        return true;
+    }
+    if text == baseline {
+        return false;
+    }
+    if text.contains("BEGIN_TOOL") && !baseline.contains("BEGIN_TOOL") {
+        return true;
+    }
+    text != baseline
+}
+
+fn store_and_emit_agent_response(
+    app: &AppHandle,
+    state: &WebviewState,
+    agent_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    if text.contains("BEGIN_TOOL") {
+        log_tool_capture_if_new(app, agent_id, "bridge-response", text);
+    }
+    {
+        let mut responses = state.responses.lock().map_err(|e| e.to_string())?;
+        responses.insert(agent_id.to_string(), text.to_string());
+    }
+    {
+        let mut cache = state.peek_cache.lock().map_err(|e| e.to_string())?;
+        cache.insert(agent_id.to_string(), text.to_string());
+    }
+    let log_content = format!("text:\n{}", text);
+    emit_bridge_comm_log_inner(app, agent_id, "response", &log_content);
+    emit_agent_chat_event(app, agent_id, "agent", -1, text)
+}
+
+fn reset_bridge_baseline_on_send(app: &AppHandle, label: &str, agent_id: &str) {
+    let baseline = eval_webview_json(app, label, BRIDGE_RESPONSE_EXPR)
+        .ok()
+        .map(|raw| parse_bridge_response_meta(&raw).text)
+        .unwrap_or_default();
+
+    let state = app.state::<WebviewState>();
+    let mut sync_states = match state.sync_states.lock() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    if let Some(sync_state) = sync_states.get_mut(agent_id) {
+        sync_state.on_send(baseline);
+    }
+}
+
+fn process_bridge_response_sync(
+    app: &AppHandle,
+    label: &str,
+    agent_id: &str,
+    stable_ms: u64,
+    conversation_empty: bool,
+) {
+    let raw = eval_webview_json(app, label, BRIDGE_RESPONSE_EXPR).unwrap_or_default();
+    let meta = parse_bridge_response_meta(&raw);
+    if meta.text.is_empty() {
+        return;
+    }
+
+    // 生成中不定稿，避免流式中间态误报缺 END_TOOL
+    // 已含完整 END_TOOL 时仍定稿（站点残留 typing 类会误报 loading）
+    if meta.loading
+        && !(meta.text.contains("BEGIN_TOOL") && meta.text.contains("END_TOOL"))
+    {
+        let state = app.state::<WebviewState>();
+        if let Ok(mut sync_states) = state.sync_states.lock() {
+            if let Some(sync_state) = sync_states.get_mut(agent_id) {
+                sync_state.bridge_stable_tracker = None;
+            }
+        }
+        return;
+    }
+
+    // 即使会话 DOM 误检，bridge 侧有 BEGIN_TOOL 也同步
+    if !conversation_empty && !meta.text.contains("BEGIN_TOOL") {
+        return;
+    }
+
+    let now = Instant::now();
+    let mut ready_text: Option<String> = None;
+
+    {
+        let state = app.state::<WebviewState>();
+        let mut sync_states = match state.sync_states.lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let sync_state = sync_states
+            .entry(agent_id.to_string())
+            .or_insert_with(AgentSyncState::new);
+
+        if meta.text == sync_state.last_emitted_bridge_text {
+            return;
+        }
+
+        if !has_new_bridge_text(&sync_state.bridge_baseline, &meta.text) {
+            sync_state.bridge_stable_tracker = None;
+            return;
+        }
+
+        if meta.key >= 0 && meta.key > 0 {
+            sync_state.bridge_baseline = meta.text.clone();
+        }
+
+        match sync_state.bridge_stable_tracker.as_ref() {
+            Some((last_text, since)) if last_text == &meta.text => {
+                let required_stable = if meta.text.contains("BEGIN_TOOL")
+                    && !sync_state.last_emitted_bridge_text.contains("BEGIN_TOOL")
+                {
+                    600
+                } else {
+                    stable_ms
+                };
+                if now.duration_since(*since) >= Duration::from_millis(required_stable) {
+                    sync_state.last_emitted_bridge_text = meta.text.clone();
+                    sync_state.bridge_stable_tracker = None;
+                    ready_text = Some(meta.text.clone());
+                }
+            }
+            _ => {
+                sync_state.bridge_stable_tracker = Some((meta.text.clone(), now));
+            }
+        }
+    }
+
+    if let Some(text) = ready_text {
+        eprintln!("[bridge-sync] emit agent={agent_id} len={}", text.len());
+        let state = app.state::<WebviewState>();
+        if let Err(err) = store_and_emit_agent_response(app, state.inner(), agent_id, &text) {
+            eprintln!("[bridge-sync] emit failed: {err}");
+        }
+    }
+}
+
+fn eval_webview_script(app: &AppHandle, label: &str, script: &str) -> Result<(), String> {
+    let label = label.to_string();
+    let script = script.to_string();
+    let app = app.clone();
+
+    app.clone()
+        .run_on_main_thread(move || {
+            if let Some(webview) = app.get_webview(&label) {
+                let _ = webview.eval(&script);
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
+async fn ensure_bridge_injected(app: &AppHandle, label: &str, _agent_id: &str) {
+    let bridge_ready = eval_webview_json(app, label, BRIDGE_CHECK_EXPR)
+        .map(|value| value == "true")
+        .unwrap_or(false);
+
+    if bridge_ready {
+        return;
+    }
+
+    let injection = {
+        let scripts = app.state::<WebviewState>();
+        let guard = scripts.injection_scripts.lock().ok();
+        guard.and_then(|map| map.get(label).cloned())
+    };
+
+    let Some(script) = injection else {
+        return;
+    };
+
+    let config_script = r#"
+if (window.__agentEditorBridge) {
+  window.__agentEditorBridge.onEditorMessage({
+    type: 'config',
+    pollIntervalMs: 500,
+    stableMs: 2000
+  });
+}
+"#;
+    let full = format!("{script}\n{config_script}");
+    let _ = eval_webview_script(app, label, &full);
+    let _ = eval_webview_json(app, label, BRIDGE_CHECK_EXPR);
+}
+
+async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String) {
+    let poll_interval_ms = 800u64;
+    let stable_ms = 1500u64;
+
+    ensure_bridge_injected(&app, &label, &agent_id).await;
+    if let Ok(raw) = eval_webview_json(&app, &label, CONVERSATION_CAPTURE_EXPR) {
+        let baseline = parse_conversation_messages(&raw);
+        if !baseline.is_empty() {
+            let state = app.state::<WebviewState>();
+            let mut sync_states = match state.sync_states.lock() {
+                Ok(value) => value,
+                Err(_) => return,
+            };
+            let sync_state = sync_states
+                .entry(agent_id.clone())
+                .or_insert_with(AgentSyncState::new);
+            for message in baseline {
+                sync_state.emitted_keys.insert(message.key);
+                sync_state
+                    .emitted_texts
+                    .insert(message.key, message.text.clone());
+            }
+            sync_state.seeded = true;
+        }
+    }
+
+    loop {
+        async_delay(poll_interval_ms).await;
+
+        if app.get_webview(&label).is_none() {
+            let state = app.state::<WebviewState>();
+            if let Ok(mut active) = state.active_syncs.lock() {
+                active.remove(&label);
+            }
+            break;
+        }
+
+        let state = app.state::<WebviewState>();
+        if !is_webview_visible(&state, &label) {
+            continue;
+        }
+
+        ensure_bridge_injected(&app, &label, &agent_id).await;
+
+        let _ = eval_webview_json(&app, &label, BRIDGE_SCHEDULE_COPY_EXPR);
+        flush_bridge_queues(&app, &label, &agent_id);
+
+        let raw = eval_webview_json(&app, &label, CONVERSATION_CAPTURE_EXPR).unwrap_or_default();
+
+        let messages = parse_conversation_messages(&raw);
+        let conversation_empty = messages.is_empty();
+
+        if !conversation_empty {
+            let mut ready_messages: Vec<ChatMessage> = Vec::new();
+            {
+                let state = app.state::<WebviewState>();
+                let mut sync_states = match state.sync_states.lock() {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                let sync_state = sync_states
+                    .entry(agent_id.clone())
+                    .or_insert_with(AgentSyncState::new);
+
+                for message in messages {
+                    if should_skip_sync_message(sync_state, &message) {
+                        continue;
+                    }
+
+                    let required_stable = if message.role == "agent" {
+                        agent_emit_stable_ms(&message.text, stable_ms)
+                    } else {
+                        stable_ms
+                    };
+
+                    let now = Instant::now();
+                    match sync_state.stable_tracker.get(&message.key) {
+                        Some((last_text, since)) if last_text == &message.text => {
+                            if now.duration_since(*since)
+                                >= Duration::from_millis(required_stable)
+                            {
+                                sync_state.emitted_keys.insert(message.key);
+                                sync_state
+                                    .emitted_texts
+                                    .insert(message.key, message.text.clone());
+                                sync_state.stable_tracker.remove(&message.key);
+                                ready_messages.push(message);
+                            }
+                        }
+                        _ => {
+                            if message.role == "agent" {
+                                if let Some((prev_text, _)) =
+                                    sync_state.stable_tracker.get(&message.key)
+                                {
+                                    if prev_text.contains("BEGIN_TOOL")
+                                        && !message.text.contains("BEGIN_TOOL")
+                                    {
+                                        let already_emitted_tool = sync_state
+                                            .emitted_texts
+                                            .get(&message.key)
+                                            .map(|t| t.contains("BEGIN_TOOL"))
+                                            .unwrap_or(false);
+                                        if !already_emitted_tool {
+                                            sync_state.emitted_keys.insert(message.key);
+                                            sync_state.emitted_texts.insert(
+                                                message.key,
+                                                prev_text.clone(),
+                                            );
+                                            ready_messages.push(ChatMessage {
+                                                key: message.key,
+                                                role: message.role.clone(),
+                                                text: prev_text.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            sync_state.stable_tracker.insert(
+                                message.key,
+                                (message.text.clone(), now),
+                            );
+                        }
+                    }
+                }
+            }
+
+            for message in ready_messages {
+                emit_chat_message(&app, &agent_id, &message);
+            }
+        }
+
+        process_bridge_response_sync(
+            &app,
+            &label,
+            &agent_id,
+            stable_ms,
+            conversation_empty,
+        );
+    }
+}
+
+fn start_bridge_response_watch(app: &AppHandle, label: String, agent_id: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let stable_ms = 1200u64;
+        let poll_ms = 400u64;
+        for _ in 0..225 {
+            async_delay(poll_ms).await;
+            if app.get_webview(&label).is_none() {
+                break;
+            }
+            let conversation_raw =
+                eval_webview_json(&app, &label, CONVERSATION_CAPTURE_EXPR).unwrap_or_default();
+            let conversation_empty = parse_conversation_messages(&conversation_raw).is_empty();
+            let _ = eval_webview_json(&app, &label, BRIDGE_SCHEDULE_COPY_EXPR);
+            flush_bridge_queues(&app, &label, &agent_id);
+            process_bridge_response_sync(&app, &label, &agent_id, stable_ms, conversation_empty);
+        }
+    });
+}
+
+fn start_conversation_sync(app: &AppHandle, label: String, agent_id: String) {
+    let state = app.state::<WebviewState>();
+    let should_start = {
+        let mut active = match state.active_syncs.lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        if active.contains(&label) {
+            false
+        } else {
+            active.insert(label.clone());
+            true
+        }
+    };
+
+    if !should_start {
+        return;
+    }
+
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        sync_conversation_task(app_clone, label, agent_id).await;
+    });
+}
+
+static POPUP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+fn enable_webview2_default_context_menu(platform_webview: &tauri::webview::PlatformWebview) {
+    unsafe {
+        let Ok(core) = platform_webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(settings) = core.Settings() else {
+            return;
+        };
+        let _ = settings.SetAreDefaultContextMenusEnabled(true);
+    }
+}
+
+fn open_agent_popup_window(
+    app: &AppHandle,
+    parent_label: &str,
+    url: url::Url,
+    features: NewWindowFeatures,
+) -> NewWindowResponse<tauri::Wry> {
+    let popup_id = POPUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let popup_label = format!("{}-popup-{}", parent_label, popup_id);
+    let app_for_nested = app.clone();
+    let parent_for_nested = popup_label.clone();
+
+    #[cfg(windows)]
+    let webview_environment = features.opener().environment.clone();
+
+    let mut builder = WebviewWindowBuilder::new(app, &popup_label, WebviewUrl::External(url.clone()))
+        .window_features(features)
+        .title("登录")
+        .inner_size(960.0, 720.0)
+        .center()
+        .initialization_script(
+            r#"(function(){window.addEventListener('contextmenu',function(e){e.stopImmediatePropagation();},true);})();"#,
+        )
+        .on_new_window(move |nested_url, nested_features| {
+            open_agent_popup_window(&app_for_nested, &parent_for_nested, nested_url, nested_features)
+        });
+
+    #[cfg(windows)]
+    {
+        builder = builder.with_environment(webview_environment);
+    }
+
+    match builder.build() {
+        Ok(window) => {
+            #[cfg(windows)]
+            {
+                let _ = window.with_webview(|platform_webview| {
+                    enable_webview2_default_context_menu(&platform_webview);
+                });
+            }
+            NewWindowResponse::Create { window }
+        }
+        Err(err) => {
+            eprintln!("[agent-webview] popup create failed: {}", err);
+            NewWindowResponse::Allow
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn create_agent_webview(
+    app: AppHandle,
+    state: State<'_, WebviewState>,
+    label: String,
+    url: String,
+    agent_id: String,
+    bounds: WebviewBounds,
+    bridge_script: String,
+    template_script: String,
+    bridge_config: serde_json::Value,
+) -> Result<(), String> {
+    {
+        let mut webviews = state.webviews.lock().map_err(|e| e.to_string())?;
+        if webviews.contains_key(&label) && !agent_webview_alive(&app, &label) {
+            webviews.remove(&label);
+        }
+        if webviews.contains_key(&label) {
+            drop(webviews);
+            return Ok(());
+        }
+    }
+
+    let data_dir = agent_data_dir(&app, &agent_id)?;
+    let parsed_url: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
+
+    let injection = build_injection_script(&template_script, &bridge_script);
+    let poll_interval = 500;
+    let stable_ms = 2000;
+
+    let init_script = format!(
+        r#"
+{injection}
+(function(){{
+  // 允许 WebView 默认右键菜单，阻止页面拦截
+  window.addEventListener('contextmenu', function (e) {{
+    e.stopImmediatePropagation();
+  }}, true);
+}})();
+(function(cfg){{
+  if (!window.__agentEditorBridge) return;
+  var msg = {{ type: 'config', pollIntervalMs: {poll_interval}, stableMs: {stable_ms} }};
+  if (cfg && typeof cfg === 'object') {{
+    if (cfg.selectors) msg.selectors = cfg.selectors;
+    if (cfg.inputMode) msg.inputMode = cfg.inputMode;
+    if (cfg.typeDelayMs != null) msg.typeDelayMs = cfg.typeDelayMs;
+    if (cfg.typeStrategy) msg.typeStrategy = cfg.typeStrategy;
+    if (typeof cfg.readToolViaCopy === 'boolean') msg.readToolViaCopy = cfg.readToolViaCopy;
+  }}
+  window.__agentEditorBridge.onEditorMessage(msg);
+  window.__agentEditorBridge.onEditorMessage({{ type: 'config', agentId: '{agent_id}' }});
+}})({bridge_config});
+"#,
+        injection = injection,
+        bridge_config = bridge_config.to_string(),
+        poll_interval = poll_interval,
+        stable_ms = stable_ms
+    );
+
+    {
+        let mut scripts = state.injection_scripts.lock().map_err(|e| e.to_string())?;
+        scripts.insert(label.clone(), init_script.clone());
+    }
+
+    {
+        let mut sync_states = state.sync_states.lock().map_err(|e| e.to_string())?;
+        sync_states.insert(agent_id.clone(), AgentSyncState::new());
+    }
+
+    let app_for_create = app.clone();
+    let label_for_create = label.clone();
+    let agent_id_for_title = agent_id.clone();
+    let init_for_create = init_script.clone();
+
+    if crate::is_agent_host_mode() {
+        // Host：独立窗口，仅显示 Agent 页
+        run_on_main_thread_sync(&app, move || {
+            let app_for_popup = app_for_create.clone();
+            let parent_label = label_for_create.clone();
+            let width = if bounds.width > 0.0 { bounds.width } else { 1000.0 };
+            let height = if bounds.height > 0.0 { bounds.height } else { 750.0 };
+            let builder = WebviewWindowBuilder::new(
+                &app_for_create,
+                &label_for_create,
+                WebviewUrl::External(parsed_url),
+            )
+            .title(format!("WAB · {}", agent_id_for_title))
+            .inner_size(width, height)
+            .center()
+            .visible(false)
+            .initialization_script(&init_for_create)
+            .data_directory(data_dir)
+            .on_new_window(move |url, features| {
+                open_agent_popup_window(&app_for_popup, &parent_label, url, features)
+            });
+
+            let window = builder.build().map_err(|e| e.to_string())?;
+            #[cfg(windows)]
+            {
+                let _ = window.with_webview(|platform_webview| {
+                    enable_webview2_default_context_menu(&platform_webview);
+                });
+            }
+            attach_host_window_close_cleanup(&app_for_create, &window, &label_for_create);
+            let _ = window.hide();
+            Ok(())
+        })?;
+    } else {
+        // 桌面编辑器：挂到 main 的子 WebView
+        run_on_main_thread_sync(&app, move || {
+            let window = app_for_create
+                .get_window("main")
+                .ok_or_else(|| "Main window not found".to_string())?;
+
+            let app_for_popup = app_for_create.clone();
+            let parent_label = label_for_create.clone();
+            let builder = tauri::webview::WebviewBuilder::new(
+                &label_for_create,
+                WebviewUrl::External(parsed_url),
+            )
+            .initialization_script(&init_for_create)
+            .data_directory(data_dir)
+            .auto_resize()
+            .on_new_window(move |url, features| {
+                open_agent_popup_window(&app_for_popup, &parent_label, url, features)
+            });
+
+            let child = window
+                .add_child(
+                    builder,
+                    LogicalPosition::new(bounds.x, bounds.y),
+                    LogicalSize::new(bounds.width, bounds.height),
+                )
+                .map_err(|e| e.to_string())?;
+
+            child
+                .set_position(LogicalPosition::new(bounds.x, bounds.y))
+                .map_err(|e| e.to_string())?;
+            child
+                .set_size(LogicalSize::new(bounds.width, bounds.height))
+                .map_err(|e| e.to_string())?;
+            child.show().map_err(|e| e.to_string())?;
+
+            #[cfg(windows)]
+            {
+                let _ = child.with_webview(|platform_webview| {
+                    enable_webview2_default_context_menu(&platform_webview);
+                });
+            }
+            Ok(())
+        })?;
+    }
+
+    let mut webviews = state.webviews.lock().map_err(|e| e.to_string())?;
+    webviews.insert(label, true);
+
+    Ok(())
+}
+
+fn run_on_main_thread_sync<T: Send + 'static>(
+    app: &AppHandle,
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = mpsc::channel();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(f());
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv_timeout(Duration::from_secs(10))
+        .map_err(|_| "主线程操作超时".to_string())?
+}
+
+#[tauri::command]
+pub async fn show_agent_webview(
+    app: AppHandle,
+    label: String,
+    bounds: WebviewBounds,
+) -> Result<(), String> {
+    let app_for_ui = app.clone();
+    let label_for_ui = label.clone();
+    run_on_main_thread_sync(&app, move || {
+        if crate::is_agent_host_mode() {
+            let win = match app_for_ui.get_webview_window(&label_for_ui) {
+                Some(w) => w,
+                None => {
+                    mark_agent_webview_gone(&app_for_ui, &label_for_ui);
+                    return Err(format!("Webview window not found: {}", label_for_ui));
+                }
+            };
+            let width = if bounds.width > 0.0 { bounds.width } else { 1000.0 };
+            let height = if bounds.height > 0.0 { bounds.height } else { 750.0 };
+            let _ = win.unminimize();
+            win.set_size(LogicalSize::new(width, height))
+                .map_err(|e| e.to_string())?;
+            let _ = win.center();
+            win.show().map_err(|e| e.to_string())?;
+            let _ = win.set_focus();
+        } else {
+            let webview = app_for_ui
+                .get_webview(&label_for_ui)
+                .ok_or_else(|| format!("Webview not found: {}", label_for_ui))?;
+            webview
+                .set_position(LogicalPosition::new(bounds.x, bounds.y))
+                .map_err(|e| e.to_string())?;
+            webview
+                .set_size(LogicalSize::new(bounds.width, bounds.height))
+                .map_err(|e| e.to_string())?;
+            webview.show().map_err(|e| e.to_string())?;
+        }
+
+        let state = app_for_ui.state::<WebviewState>();
+        if let Ok(mut visible) = state.visible_labels.lock() {
+            visible.insert(label_for_ui);
+        }
+        Ok(())
+    })?;
+
+    let agent_id = label
+        .strip_prefix("agent-")
+        .unwrap_or(&label)
+        .to_string();
+    start_conversation_sync(&app, label, agent_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn hide_agent_webview(app: AppHandle, label: String) -> Result<(), String> {
+    let app_for_ui = app.clone();
+    let label_for_ui = label.clone();
+    run_on_main_thread_sync(&app, move || {
+        if crate::is_agent_host_mode() {
+            if let Some(win) = app_for_ui.get_webview_window(&label_for_ui) {
+                win.hide().map_err(|e| e.to_string())?;
+            }
+        } else if let Some(webview) = app_for_ui.get_webview(&label_for_ui) {
+            webview.hide().map_err(|e| e.to_string())?;
+        }
+
+        let state = app_for_ui.state::<WebviewState>();
+        if let Ok(mut visible) = state.visible_labels.lock() {
+            visible.remove(&label_for_ui);
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub async fn send_agent_message(
+    app: AppHandle,
+    label: String,
+    agent_id: String,
+    text: String,
+) -> Result<(), String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview not found: {}", label))?;
+
+    let escaped: String = text
+        .chars()
+        .map(|c| match c {
+            '\\' => "\\\\".to_string(),
+            '"' => "\\\"".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            c if c.is_control() => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        })
+        .collect();
+
+    let script = format!(
+        r#"
+if (window.__agentEditorBridge) {{
+  window.__agentEditorBridge.onEditorMessage({{
+    type: 'send',
+    text: "{escaped}",
+    agentId: "{agent_id}"
+  }});
+}}
+"#,
+        escaped = escaped,
+        agent_id = agent_id
+    );
+
+    let log_content = format!("type: send\nagentId: {}\ntext:\n{}", agent_id, text);
+    emit_bridge_comm_log_inner(&app, &agent_id, "request", &log_content);
+
+    webview.eval(&script).map_err(|e| e.to_string())?;
+    reset_bridge_baseline_on_send(&app, &label, &agent_id);
+    start_bridge_response_watch(&app, label, agent_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn fill_agent_message(
+    app: AppHandle,
+    label: String,
+    agent_id: String,
+    text: String,
+) -> Result<(), String> {
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview not found: {}", label))?;
+
+    let escaped: String = text
+        .chars()
+        .map(|c| match c {
+            '\\' => "\\\\".to_string(),
+            '"' => "\\\"".to_string(),
+            '\n' => "\\n".to_string(),
+            '\r' => "\\r".to_string(),
+            '\t' => "\\t".to_string(),
+            c if c.is_control() => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        })
+        .collect();
+
+    let script = format!(
+        r#"
+if (window.__agentEditorBridge) {{
+  window.__agentEditorBridge.onEditorMessage({{
+    type: 'fill',
+    text: "{escaped}",
+    agentId: "{agent_id}"
+  }});
+}}
+"#,
+        escaped = escaped,
+        agent_id = agent_id
+    );
+
+    let log_content = format!("type: fill\nagentId: {}\ntext:\n{}", agent_id, text);
+    emit_bridge_comm_log_inner(&app, &agent_id, "request", &log_content);
+
+    webview.eval(&script).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn emit_agent_chat_message(
+    app: AppHandle,
+    agent_id: String,
+    role: String,
+    key: i64,
+    text: String,
+) -> Result<(), String> {
+    emit_agent_chat_event(&app, &agent_id, &role, key, &text)
+}
+
+#[tauri::command]
+pub async fn reset_agent_bridge_tracking(
+    app: AppHandle,
+    agent_id: String,
+) -> Result<(), String> {
+    let label = format!("agent-{}", agent_id);
+    reset_bridge_baseline_on_send(&app, &label, &agent_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn store_agent_response(
+    app: AppHandle,
+    state: State<'_, WebviewState>,
+    agent_id: String,
+    text: String,
+) -> Result<(), String> {
+    store_and_emit_agent_response(&app, &state, &agent_id, &text)
+}
+
+#[tauri::command]
+pub async fn agent_bridge_is_loading(app: AppHandle, agent_id: String) -> Result<bool, String> {
+    let label = format!("agent-{}", agent_id);
+    let raw = eval_webview_json(&app, &label, BRIDGE_IS_LOADING_EXPR).unwrap_or_else(|_| "false".to_string());
+    Ok(raw.trim() == "true")
+}
+
+#[tauri::command]
+pub async fn peek_agent_response(
+    state: State<'_, WebviewState>,
+    agent_id: String,
+    text: String,
+    response_key: Option<i64>,
+) -> Result<(), String> {
+    {
+        let mut cache = state.peek_cache.lock().map_err(|e| e.to_string())?;
+        cache.insert(agent_id.clone(), text);
+    }
+    if let Some(key) = response_key {
+        let mut key_cache = state.peek_key_cache.lock().map_err(|e| e.to_string())?;
+        key_cache.insert(agent_id, key);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn poll_agent_response(
+    state: State<'_, WebviewState>,
+    agent_id: String,
+) -> Result<Option<String>, String> {
+    let mut responses = state.responses.lock().map_err(|e| e.to_string())?;
+    Ok(responses.remove(&agent_id))
+}
+
+pub fn debug_query_agent(app: &AppHandle, agent_id: &str) -> Result<serde_json::Value, String> {
+    let label = format!("agent-{}", agent_id);
+    let webview_exists = app.get_webview(&label).is_some();
+
+    let state = app.state::<WebviewState>();
+    let webviews_registered = state
+        .webviews
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&label);
+    let sync_active = state
+        .active_syncs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains(&label);
+    let sync_info = {
+        let sync_states = state.sync_states.lock().map_err(|e| e.to_string())?;
+        if let Some(sync_state) = sync_states.get(agent_id) {
+            serde_json::json!({
+                "seeded": sync_state.seeded,
+                "emittedKeyCount": sync_state.emitted_keys.len(),
+                "pendingKeyCount": sync_state.stable_tracker.len(),
+                "bridgeBaselineLen": sync_state.bridge_baseline.len(),
+                "lastEmittedBridgeLen": sync_state.last_emitted_bridge_text.len(),
+                "bridgeStablePending": sync_state.bridge_stable_tracker.is_some(),
+            })
+        } else {
+            serde_json::json!({
+                "seeded": false,
+                "emittedKeyCount": 0,
+                "pendingKeyCount": 0,
+                "bridgeBaselineLen": 0,
+                "lastEmittedBridgeLen": 0,
+                "bridgeStablePending": false,
+            })
+        }
+    };
+
+    if !webview_exists {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "agentId": agent_id,
+            "label": label,
+            "webviewExists": false,
+            "webviewsRegistered": webviews_registered,
+            "syncActive": sync_active,
+            "sync": sync_info,
+            "error": "webview not found",
+        }));
+    }
+
+    let bridge_raw = eval_webview_json(app, &label, BRIDGE_CHECK_EXPR)
+        .unwrap_or_else(|err| format!("\"{err}\""));
+    let conversation_raw =
+        eval_webview_json(app, &label, CONVERSATION_CAPTURE_EXPR).unwrap_or_default();
+    let dom_raw = eval_webview_json(app, &label, DEBUG_DOM_EXPR).unwrap_or_default();
+    let inspect_raw = eval_webview_json(app, &label, AGENT_INSPECT_EXPR).unwrap_or_default();
+    let messages = parse_conversation_messages(&conversation_raw);
+    let dom_value = serde_json::from_str::<serde_json::Value>(&dom_raw)
+        .unwrap_or(serde_json::Value::String(dom_raw));
+    let inspect_value = serde_json::from_str::<serde_json::Value>(&inspect_raw)
+        .unwrap_or(serde_json::Value::String(inspect_raw));
+    let virtual_item_count = dom_value
+        .get("virtualItemCount")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "agentId": agent_id,
+        "label": label,
+        "webviewExists": webview_exists,
+        "webviewsRegistered": webviews_registered,
+        "syncActive": sync_active,
+        "bridgeReady": bridge_raw == "true",
+        "bridgeRaw": bridge_raw,
+        "virtualItemCount": virtual_item_count,
+        "conversation": messages.iter().map(|message| serde_json::json!({
+            "key": message.key,
+            "role": message.role,
+            "text": message.text,
+        })).collect::<Vec<_>>(),
+        "conversationRaw": conversation_raw,
+        "dom": dom_value,
+        "inspect": inspect_value,
+        "sync": sync_info,
+    }))
+}
+
+pub fn debug_reset_sync(app: &AppHandle, agent_id: &str) -> Result<(), String> {
+    let state = app.state::<WebviewState>();
+    let mut sync_states = state.sync_states.lock().map_err(|e| e.to_string())?;
+    sync_states.remove(agent_id);
+    Ok(())
+}
+
+const LAST_FILE_OP_EXPR: &str = "JSON.stringify(window.__agentEditorLastFileOp||null)";
+
+pub fn debug_query_bridge_response(app: &AppHandle, agent_id: &str) -> Result<serde_json::Value, String> {
+    let label = format!("agent-{}", agent_id);
+    let raw = eval_webview_json(app, &label, BRIDGE_RESPONSE_EXPR).unwrap_or_default();
+    let parsed = parse_bridge_response_meta(&raw);
+    let copy_raw = eval_webview_json(app, &label, BRIDGE_COPY_DEBUG_EXPR).unwrap_or_default();
+    let copy_debug = serde_json::from_str::<serde_json::Value>(&copy_raw)
+        .unwrap_or(serde_json::Value::String(copy_raw));
+    Ok(serde_json::json!({
+        "ok": true,
+        "agentId": agent_id,
+        "raw": raw,
+        "meta": {
+            "key": parsed.key,
+            "text": parsed.text,
+        },
+        "copy": copy_debug,
+    }))
+}
+
+pub fn debug_query_last_file_op(app: &AppHandle) -> Result<serde_json::Value, String> {
+    let raw = eval_webview_json(app, "main", LAST_FILE_OP_EXPR).unwrap_or_default();
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
+        return Ok(serde_json::json!({ "ok": true, "lastFileOp": serde_json::Value::Null }));
+    }
+    let last_file_op = serde_json::from_str::<serde_json::Value>(&raw)
+        .unwrap_or(serde_json::Value::String(raw));
+    Ok(serde_json::json!({
+        "ok": true,
+        "lastFileOp": last_file_op,
+    }))
+}

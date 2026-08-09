@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+  - 'vscode-extension'
+allowBuilds:
+  '@vscode/vsce-sign': false
+  esbuild: true
+  keytar: false

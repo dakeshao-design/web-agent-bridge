@@ -1,0 +1,33 @@
+[package]
+name = "editor-app"
+version = "0.1.0"
+description = "WABEditor desktop code editor"
+authors = ["WebAgent"]
+edition = "2021"
+
+[lib]
+name = "editor_app_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+tiny_http = "0.12"
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

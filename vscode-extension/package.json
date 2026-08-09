@@ -1,0 +1,129 @@
+{
+  "name": "webagent-bridge",
+  "displayName": "WAB - Web Agent Bridge",
+  "description": "侧栏 Agent 面板 + 静默 WebView2 Host，通过 call-tool 操作工作区文件",
+  "version": "0.1.0",
+  "publisher": "webagent",
+  "private": true,
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "webAgentBridge",
+          "title": "WAB",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "webAgentBridge": [
+        {
+          "type": "webview",
+          "id": "webAgentBridge.panel",
+          "name": "WAB"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "webAgentBridge.openAgentsConfig",
+        "title": "WAB: Open Agents Config"
+      },
+      {
+        "command": "webAgentBridge.openAppConfig",
+        "title": "WAB: Open App Config"
+      },
+      {
+        "command": "webAgentBridge.openConfigFolder",
+        "title": "WAB: Open Config Folder"
+      },
+      {
+        "command": "webAgentBridge.resetConfig",
+        "title": "WAB: Reset Config To Defaults"
+      },
+      {
+        "command": "webAgentBridge.sendCurrentFile",
+        "title": "WAB: Send Current File"
+      },
+      {
+        "command": "webAgentBridge.sendSelection",
+        "title": "WAB: Send Selection"
+      },
+      {
+        "command": "webAgentBridge.sendAgentMode",
+        "title": "WAB: Enable Agent Mode"
+      },
+      {
+        "command": "webAgentBridge.showLogin",
+        "title": "WAB: Show Login Window"
+      },
+      {
+        "command": "webAgentBridge.reloadAgents",
+        "title": "WAB: Reload Agents"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "webAgentBridge.sendCurrentFile",
+        "key": "ctrl+alt+f",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "webAgentBridge.sendSelection",
+        "key": "ctrl+alt+s",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "WAB",
+      "properties": {
+        "webAgentBridge.hostPort": {
+          "type": "number",
+          "default": 9791,
+          "description": "Agent Host HTTP 端口"
+        },
+        "webAgentBridge.hostToken": {
+          "type": "string",
+          "default": "dev-token",
+          "description": "Agent Host 鉴权 token，需与 AGENT_HOST_TOKEN 一致"
+        },
+        "webAgentBridge.autoStartHost": {
+          "type": "boolean",
+          "default": true,
+          "description": "激活扩展时自动启动静默 Agent Host"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "node ./esbuild.mjs",
+    "watch": "node ./esbuild.mjs --watch",
+    "build": "node ./scripts/copy-templates.mjs && node ./esbuild.mjs",
+    "vscode:prepublish": "pnpm run build",
+    "copy-templates": "node ./scripts/copy-templates.mjs",
+    "package-host": "node ./scripts/package-host.mjs",
+    "package": "pnpm run copy-templates && pnpm run package-host && pnpm run compile && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "dependencies": {
+    "@my-agent-editor/shared": "workspace:*",
+    "marked": "^18.0.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.2"
+  }
+}

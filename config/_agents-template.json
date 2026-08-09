@@ -1,0 +1,22 @@
+{
+  "_说明": [
+    "复制本文件为 config/agents.json 后按站点修改",
+    "必填：id / name / url / enabled / injectScript",
+    "可选：inputMode(fill|type，默认 fill)、typeStrategy(keyboard|exec|paste)、typeDelayMs(毫秒，默认 0)",
+    "可选：readToolViaCopy(默认 false)、fileCommandPrefix(默认空)、selectors(通常写在 bridge 脚本中)"
+  ],
+  "agents": [
+    {
+      "id": "example",
+      "name": "示例 Agent",
+      "url": "https://www.xxx.com/chat",
+      "enabled": true,
+      "injectScript": "scripts/xxx-bridge.js",
+      "inputMode": "fill",
+      "typeStrategy": "paste",
+      "typeDelayMs": 0,
+      "readToolViaCopy": false,
+      "fileCommandPrefix": "@file"
+    }
+  ]
+}
