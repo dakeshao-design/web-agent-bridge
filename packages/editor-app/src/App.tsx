@@ -22,7 +22,7 @@ import {
   buildPermissionAskMessage,
   mergeToolPermissions,
   buildSelectionMessage,
-  parseFileLineLimitFromBridgeScript,
+  parseFileLineLimitsFromBridgeScript,
   POWERSHELL_PROGRESS_INTERVAL_MS,
   parsePowershellWaitDecision,
   type AgentConfig,
@@ -34,6 +34,7 @@ import {
   type ToolPermissionsConfig,
 } from '@my-agent-editor/shared';
 import { ask, message } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core';
 import { Editor, type EditorSelectionInfo } from './components/Editor';
 import { AgentPanel } from './components/AgentPanel';
 import { FileTree } from './components/FileTree';
@@ -119,6 +120,7 @@ export default function App() {
   const activeAgentIdRef = useRef<string | null>(null);
   const agentsRef = useRef<AgentConfig[]>([]);
   const toolPermissionsRef = useRef<ToolPermissionsConfig>(mergeToolPermissions());
+  const adminModeRef = useRef(false);
   const settingsOpenRef = useRef(false);
   const incompleteHintRef = useRef<Set<string>>(new Set());
   const unknownToolHintRef = useRef<Set<string>>(new Set());
@@ -145,6 +147,16 @@ export default function App() {
   useEffect(() => {
     activeAgentIdRef.current = activeAgentId;
   }, [activeAgentId]);
+
+  useEffect(() => {
+    void invoke<boolean>('is_admin_mode')
+      .then((v) => {
+        adminModeRef.current = !!v;
+      })
+      .catch(() => {
+        adminModeRef.current = false;
+      });
+  }, []);
 
   useEffect(() => {
     agentsRef.current = agents;
@@ -320,7 +332,7 @@ export default function App() {
   );
 
   const applyFileOperation = useCallback(
-    async (op: FileOperation, fileLineLimit?: number) => {
+    async (op: FileOperation, readFileLineLimit?: number) => {
       const result = await executeFileTool(op, {
         fileService,
         workspaceRoot,
@@ -331,7 +343,7 @@ export default function App() {
         setIsDirty,
         addLogEntry,
         publishLastFileOp,
-        fileLineLimit,
+        readFileLineLimit,
       });
       if (
         result.ok &&
@@ -360,9 +372,10 @@ export default function App() {
           if (!prevText || prevText === text) {
             return;
           }
-          const gainedTool = text.includes('BEGIN_TOOL') && !prevText.includes('BEGIN_TOOL');
+          // 同 key 下 tool 内容变化时再处理
+          const toolChanged = text.includes('BEGIN_TOOL') && text !== prevText;
           const grewMuch = text.length > prevText.length + 40;
-          if (!gainedTool && !grewMuch) {
+          if (!toolChanged && !grewMuch) {
             return;
           }
           loggedChatKeysRef.current.delete(dedupeKey);
@@ -470,7 +483,7 @@ export default function App() {
               return isIncompleteFromLastConversation(text, latest);
             },
             onConfirm: async () => {
-              const limit = agentsRef.current.find((a) => a.id === agentId)?.fileLineLimit;
+              const limit = agentsRef.current.find((a) => a.id === agentId)?.writeFileLineLimit;
               const hint = buildIncompleteCallToolHint(limit);
               await logUserMessage(agentId, hint, '工具结果');
               await sendToolResultToAgent(agentId, hint);
@@ -525,7 +538,8 @@ export default function App() {
           op,
           workspaceRoot,
           toolPermissionsRef.current,
-          resolveFilePath
+          resolveFilePath,
+          { skipOutsideWorkspaceDowngrade: adminModeRef.current }
         );
         if (effective === 'deny') {
           const denied = buildDeniedToolResult(toolName);
@@ -688,8 +702,8 @@ export default function App() {
           continue;
         }
 
-        const fileLineLimit = agentsRef.current.find((a) => a.id === agentId)?.fileLineLimit;
-        const result = await applyFileOperation(op, fileLineLimit);
+        const readFileLineLimit = agentsRef.current.find((a) => a.id === agentId)?.readFileLineLimit;
+        const result = await applyFileOperation(op, readFileLineLimit);
         const toolResultMessage = buildToolResultFromOperation(op, result);
         await logUserMessage(agentId, toolResultMessage, '工具结果');
         await sendToolResultToAgent(agentId, toolResultMessage);
@@ -790,9 +804,9 @@ export default function App() {
 
   const initConfig = useCallback(async () => {
     const loader = new ConfigLoader({
-      agentsPath: 'config/agents.json',
       appConfigPath: 'config/app.config.json',
       fetchJson: (path) => fileService.readConfigFile(path),
+      listBridgeScripts: () => fileService.listBridgeScripts(),
       watch: (paths, onChange) => {
         const interval = setInterval(async () => {
           try {
@@ -829,8 +843,12 @@ export default function App() {
           try {
             const scriptPath = agent.injectScript.replace(/^scripts\//, 'scripts/');
             const src = await fileService.readBridgeScript(scriptPath);
-            const limit = parseFileLineLimitFromBridgeScript(src);
-            return limit != null ? { ...agent, fileLineLimit: limit } : agent;
+            const limits = parseFileLineLimitsFromBridgeScript(src);
+            return {
+              ...agent,
+              ...(limits.read != null ? { readFileLineLimit: limits.read } : {}),
+              ...(limits.write != null ? { writeFileLineLimit: limits.write } : {}),
+            };
           } catch {
             return agent;
           }
@@ -843,7 +861,7 @@ export default function App() {
     setActiveAgentId((prev) => prev ?? (enabledAgents[0]?.id ?? null));
     if (enabledAgents.length === 0) {
       console.warn(
-        '[App] 没有可用的 Agent，请检查 config/agents.json。'
+        '[App] 没有可用的 Agent，请检查 scripts/*-bridge.js 头注释。'
       );
     }
 
@@ -1209,11 +1227,12 @@ export default function App() {
     if (!workspaceRoot) return;
     const targetId = activeAgentIdRef.current;
     if (!targetId) return;
-    const limit = agentsRef.current.find((a) => a.id === targetId)?.fileLineLimit;
+    const agent = agentsRef.current.find((a) => a.id === targetId);
     const msg = buildAgentModePrompt(
       workspaceRoot || undefined,
-      limit,
-      toolPermissionsRef.current
+      agent?.readFileLineLimit,
+      toolPermissionsRef.current,
+      agent?.writeFileLineLimit
     );
     setAgentModeEnabled(true);
     await logAndSendToAgent(msg, 'Agent 模式', targetId);

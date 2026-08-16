@@ -30,11 +30,10 @@ export interface AgentConfig {
   inputMode?: AgentInputMode;
   typeDelayMs?: number;
   typeStrategy?: AgentTypeStrategy;
-  /** 通过 call-tool 代码块的复制按钮获取工具正文 */
-  readToolViaCopy?: boolean;
-  fileCommandPrefix?: string;
-  /** 从 *-bridge.js 的 FILE_LINE_LIMIT 解析；未声明则无上限 */
-  fileLineLimit?: number;
+  /** 从 *-bridge.js 的 READ_FILE_LINE_LIMIT 解析；未声明则无上限 */
+  readFileLineLimit?: number;
+  /** 从 *-bridge.js 的 WRITE_FILE_LINE_LIMIT 解析；提示用，工具侧不强制 */
+  writeFileLineLimit?: number;
 }
 
 export interface AgentsConfig {

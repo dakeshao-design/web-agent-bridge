@@ -37,8 +37,7 @@
     ],
     "resources": {
       "../../../config/app.config.json": "config/app.config.json",
-      "../../../config/_agents-template.json": "config/_agents-template.json",
-      "../../../scripts/_bridge-template.js": "scripts/_bridge-template.js",
+      "../../../scripts/_bridge-template.md": "scripts/_bridge-template.md",
       "../../../scripts/bridge-default.js": "scripts/bridge-default.js"
     }
   },

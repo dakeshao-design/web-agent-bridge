@@ -15,9 +15,10 @@ use shell::{
 };
 use webview_bridge::{
     agent_bridge_is_loading, create_agent_webview, emit_agent_chat_message, emit_bridge_comm_log,
-    fill_agent_message, get_user_config_root, hide_agent_webview, peek_agent_response,
-    poll_agent_response, read_bridge_script, read_config_file, reset_agent_bridge_tracking,
-    send_agent_message, show_agent_webview, store_agent_response, write_config_file, WebviewState,
+    fill_agent_message, get_user_config_root, hide_agent_webview, list_bridge_scripts,
+    peek_agent_response, poll_agent_response, read_bridge_script, read_config_file,
+    reset_agent_bridge_tracking, send_agent_message, show_agent_webview, store_agent_response,
+    write_config_file, WebviewState,
 };
 
 pub fn is_agent_host_mode() -> bool {
@@ -25,6 +26,18 @@ pub fn is_agent_host_mode() -> bool {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
         || std::env::args().any(|a| a == "--agent-host")
+}
+
+pub fn is_admin_mode() -> bool {
+    std::env::var("ADMIN_MODE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || std::env::args().any(|a| a == "-adminMode" || a == "--adminMode")
+}
+
+#[tauri::command(rename = "is_admin_mode")]
+fn is_admin_mode_cmd() -> bool {
+    is_admin_mode()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,6 +54,7 @@ pub fn run() {
             read_config_file,
             write_config_file,
             read_bridge_script,
+            list_bridge_scripts,
             run_powershell,
             start_powershell,
             poll_powershell,
@@ -59,10 +73,15 @@ pub fn run() {
             peek_agent_response,
             poll_agent_response,
             agent_bridge_is_loading,
+            is_admin_mode_cmd,
         ])
         .setup(move |app| {
             let _ = get_user_config_root(app.handle().clone());
             let window = app.get_webview_window("main").expect("main window");
+            webview_bridge::apply_webview_devtools(
+                &window,
+                webview_bridge::should_enable_devtools(),
+            );
             if agent_host {
                 window.set_title("WABEditor Host").ok();
                 let _ = window.hide();

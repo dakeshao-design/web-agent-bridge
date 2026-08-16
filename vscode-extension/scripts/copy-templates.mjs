@@ -11,20 +11,13 @@ fs.rmSync(dest, { recursive: true, force: true });
 fs.mkdirSync(path.join(dest, 'config'), { recursive: true });
 fs.mkdirSync(path.join(dest, 'scripts'), { recursive: true });
 
-for (const name of ['app.config.json', '_agents-template.json']) {
-  fs.copyFileSync(path.join(repoRoot, 'config', name), path.join(dest, 'config', name));
-}
-const agentsSrc = path.join(repoRoot, 'config', 'agents.json');
-const agentsFallback = path.join(repoRoot, 'config', '_agents-template.json');
-if (fs.existsSync(agentsSrc)) {
-  fs.copyFileSync(agentsSrc, path.join(dest, 'config', 'agents.json'));
-} else {
-  fs.copyFileSync(agentsFallback, path.join(dest, 'config', 'agents.json'));
-  console.warn('[copy-templates] 无 agents.json，使用 _agents-template.json');
-}
+fs.copyFileSync(
+  path.join(repoRoot, 'config', 'app.config.json'),
+  path.join(dest, 'config', 'app.config.json')
+);
 
 for (const name of fs.readdirSync(path.join(repoRoot, 'scripts'))) {
-  if (!name.endsWith('.js')) continue;
+  if (!name.endsWith('.js') && !name.endsWith('.md')) continue;
   fs.copyFileSync(
     path.join(repoRoot, 'scripts', name),
     path.join(dest, 'scripts', name)
@@ -33,7 +26,6 @@ for (const name of fs.readdirSync(path.join(repoRoot, 'scripts'))) {
 
 console.log('[copy-templates] done ->', dest);
 
-// marked UMD for webview
 const markedSrc = path.join(extRoot, 'node_modules', 'marked', 'lib', 'marked.umd.js');
 const markedDest = path.join(extRoot, 'media', 'marked.umd.js');
 if (fs.existsSync(markedSrc)) {

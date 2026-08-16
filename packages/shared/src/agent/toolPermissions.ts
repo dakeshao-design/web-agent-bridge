@@ -56,16 +56,20 @@ export function resolveToolNameForOperation(op: FileOperation): string {
 /**
  * 有效权限：配置为 allow 且目标路径在工作区外时降为 ask。
  * run_powershell 无路径，不降级。
+ * options.skipOutsideWorkspaceDowngrade 可关闭区外降级。
  */
 export function resolveEffectivePermission(
   toolName: string,
   op: FileOperation,
   workspaceRoot: string,
   config?: ToolPermissionsConfig | null,
-  resolvePath?: (p: string) => string
+  resolvePath?: (p: string) => string,
+  options?: { skipOutsideWorkspaceDowngrade?: boolean }
 ): ToolPermissionMode {
   const configured = getConfiguredPermission(toolName, config);
   if (configured === 'deny' || configured === 'ask') return configured;
+
+  if (options?.skipOutsideWorkspaceDowngrade) return 'allow';
 
   const targets = collectOperationTargetPaths(op);
   if (targets.length === 0) return 'allow';

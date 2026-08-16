@@ -11,12 +11,10 @@ use serde_json::json;
 use tauri::webview::{NewWindowFeatures, NewWindowResponse, WebviewWindowBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WindowEvent};
 
-/// 会话 DOM 抓取由站点 bridge adapter.captureConversation 提供，无则空数组
-const CONVERSATION_CAPTURE_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.captureConversation)return [];var list=window.__agentEditorBridge.captureConversation();return Array.isArray(list)?list:[];}catch(e){return[];}})()"#;
+/// Host 轮询 pollSnapshot / pollSnapshotForHost
+const POLL_SNAPSHOT_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge)return JSON.stringify({error:"no bridge"});var fn=window.__agentEditorBridge.pollSnapshotForHost||window.__agentEditorBridge.pollSnapshot;if(typeof fn!=="function")return JSON.stringify({error:"no pollSnapshot"});return JSON.stringify(fn.call(window.__agentEditorBridge));}catch(e){return JSON.stringify({error:String(e)});}})()"#;
 
 const BRIDGE_CHECK_EXPR: &str = "Boolean(window.__agentEditorBridge)";
-
-const BRIDGE_RESPONSE_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge)return JSON.stringify({error:"no bridge"});return JSON.stringify(window.__agentEditorBridge.getLatestResponseMeta());}catch(e){return JSON.stringify({error:String(e)});}})()"#;
 
 const BRIDGE_IS_LOADING_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.isLoading)return "false";return window.__agentEditorBridge.isLoading()?"true":"false";}catch(e){return "false";}})()"#;
 
@@ -127,6 +125,7 @@ struct AgentSyncState {
     stable_tracker: HashMap<i64, (String, Instant)>,
     seeded: bool,
     bridge_baseline: String,
+    baseline_user_index: Option<i64>,
     last_emitted_bridge_text: String,
     bridge_stable_tracker: Option<(String, Instant)>,
     last_logged_tool_capture: String,
@@ -140,14 +139,16 @@ impl AgentSyncState {
             stable_tracker: HashMap::new(),
             seeded: false,
             bridge_baseline: String::new(),
+            baseline_user_index: None,
             last_emitted_bridge_text: String::new(),
             bridge_stable_tracker: None,
             last_logged_tool_capture: String::new(),
         }
     }
 
-    fn on_send(&mut self, baseline: String) {
+    fn on_send(&mut self, baseline: String, baseline_user_index: Option<i64>) {
         self.bridge_baseline = baseline;
+        self.baseline_user_index = baseline_user_index;
         self.bridge_stable_tracker = None;
         self.last_logged_tool_capture.clear();
     }
@@ -178,7 +179,8 @@ fn should_skip_sync_message(sync_state: &AgentSyncState, message: &ChatMessage) 
     if prev == &message.text {
         return true;
     }
-    if message.text.contains("BEGIN_TOOL") && !prev.contains("BEGIN_TOOL") {
+    // 同 index 下 tool 文案变化时再同步
+    if message.text.contains("BEGIN_TOOL") && message.text != *prev {
         return false;
     }
     message.text.len() <= prev.len().saturating_add(40)
@@ -243,7 +245,7 @@ fn seed_roots(app: &AppHandle) -> Vec<PathBuf> {
     roots
 }
 
-/// 首次启动：从模板填充用户配置目录（不含站点 agents）
+/// 首次启动：从模板填充用户配置目录
 fn ensure_user_config(app: &AppHandle) -> PathBuf {
     let root = user_config_root();
     let _ = fs::create_dir_all(root.join("config"));
@@ -254,28 +256,19 @@ fn ensure_user_config(app: &AppHandle) -> PathBuf {
             &seed.join("config").join("app.config.json"),
             &root.join("config").join("app.config.json"),
         );
-        let agents_dest = root.join("config").join("agents.json");
-        if !agents_dest.exists() {
-            let from_agents = seed.join("config").join("agents.json");
-            let from_template = seed.join("config").join("_agents-template.json");
-            if from_agents.exists() {
-                copy_if_missing(&from_agents, &agents_dest);
-            } else {
-                copy_if_missing(&from_template, &agents_dest);
+        let scripts_src = seed.join("scripts");
+        if let Ok(entries) = fs::read_dir(&scripts_src) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if !name.ends_with(".js") {
+                    continue;
+                }
+                copy_if_missing(&path, &root.join("scripts").join(name));
             }
         }
-        copy_if_missing(
-            &seed.join("config").join("_agents-template.json"),
-            &root.join("config").join("_agents-template.json"),
-        );
-        copy_if_missing(
-            &seed.join("scripts").join("bridge-default.js"),
-            &root.join("scripts").join("bridge-default.js"),
-        );
-        copy_if_missing(
-            &seed.join("scripts").join("_bridge-template.js"),
-            &root.join("scripts").join("_bridge-template.js"),
-        );
     }
     root
 }
@@ -287,8 +280,8 @@ fn config_search_roots(app: &AppHandle) -> Vec<PathBuf> {
     // 开发时仓库根（便于 private sync 到工作区后调试）
     let mut dir = std::env::current_dir().unwrap_or_default();
     for _ in 0..8 {
-        if dir.join("config").join("agents.json").exists()
-            || dir.join("config").join("app.config.json").exists()
+        if dir.join("config").join("app.config.json").exists()
+            || dir.join("scripts").join("bridge-default.js").exists()
         {
             roots.push(dir.clone());
         }
@@ -362,6 +355,36 @@ pub fn read_bridge_script(app: AppHandle, relative_path: String) -> Result<Strin
     fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn list_bridge_scripts(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let root = ensure_user_config(&app);
+    let scripts_dir = root.join("scripts");
+    let mut out = Vec::new();
+    let entries = fs::read_dir(&scripts_dir).map_err(|e| e.to_string())?;
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with(".js") {
+                Some(name)
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    for name in names {
+        let relative = format!("scripts/{name}");
+        let path = scripts_dir.join(&name);
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        out.push(serde_json::json!({
+            "relativePath": relative,
+            "content": content,
+        }));
+    }
+    Ok(out)
+}
+
 fn agent_data_dir(app: &AppHandle, agent_id: &str) -> Result<PathBuf, String> {
     let base = app
         .path()
@@ -424,45 +447,6 @@ fn eval_webview_json(
     result_rx
         .recv_timeout(Duration::from_secs(5))
         .map_err(|_| format!("eval result timeout on webview: {}", label_for_err))
-}
-
-fn parse_conversation_messages(raw: &str) -> Vec<ChatMessage> {
-    if raw.is_empty() || raw == "null" || raw == "undefined" {
-        return Vec::new();
-    }
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return Vec::new();
-    };
-
-    let Some(items) = value.as_array() else {
-        return Vec::new();
-    };
-
-    let mut messages = Vec::new();
-    for item in items {
-        let key = item.get("key").and_then(|v| v.as_i64()).unwrap_or(-1);
-        if key < 0 {
-            continue;
-        }
-        let role = item
-            .get("role")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let text = item
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if text.is_empty() {
-            continue;
-        }
-        messages.push(ChatMessage { key, role, text });
-    }
-
-    messages.sort_by_key(|m| m.key);
-    messages
 }
 
 async fn async_delay(ms: u64) {
@@ -609,43 +593,99 @@ struct BridgeResponseMeta {
     loading: bool,
 }
 
-fn parse_bridge_response_meta(raw: &str) -> BridgeResponseMeta {
-    if raw.is_empty() || raw == "null" || raw == "undefined" {
-        return BridgeResponseMeta {
-            key: -1,
-            text: String::new(),
-            loading: false,
-        };
-    }
+struct PollTurn {
+    index: i64,
+    text: String,
+}
 
-    let Some(value) = parse_json_value_deep(raw) else {
-        return BridgeResponseMeta {
-            key: -1,
-            text: String::new(),
-            loading: false,
-        };
-    };
+struct PollSnapshot {
+    loading: bool,
+    last_user: Option<PollTurn>,
+    last_agent: Option<PollTurn>,
+}
 
-    if value.get("error").is_some() {
-        return BridgeResponseMeta {
-            key: -1,
-            text: String::new(),
-            loading: false,
-        };
-    }
-
-    let text = value
+fn parse_poll_turn(value: Option<&serde_json::Value>) -> Option<PollTurn> {
+    let obj = value?.as_object()?;
+    let text = obj
         .get("text")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim()
         .to_string();
-    let key = value.get("key").and_then(|v| v.as_i64()).unwrap_or(-1);
+    if text.is_empty() {
+        return None;
+    }
+    let index = obj
+        .get("index")
+        .and_then(|v| v.as_i64())
+        .or_else(|| obj.get("key").and_then(|v| v.as_i64()))
+        .unwrap_or(-1);
+    Some(PollTurn { index, text })
+}
+
+fn parse_poll_snapshot(raw: &str) -> PollSnapshot {
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
+        return PollSnapshot {
+            loading: false,
+            last_user: None,
+            last_agent: None,
+        };
+    }
+    let Some(value) = parse_json_value_deep(raw) else {
+        return PollSnapshot {
+            loading: false,
+            last_user: None,
+            last_agent: None,
+        };
+    };
+    if value.get("error").is_some() {
+        return PollSnapshot {
+            loading: false,
+            last_user: None,
+            last_agent: None,
+        };
+    }
     let loading = value
         .get("loading")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    BridgeResponseMeta { key, text, loading }
+    if loading {
+        return PollSnapshot {
+            loading: true,
+            last_user: None,
+            last_agent: None,
+        };
+    }
+    let last_user = parse_poll_turn(value.get("lastUser")).or_else(|| parse_poll_turn(value.get("last_user")));
+    let last_agent =
+        parse_poll_turn(value.get("lastAgent")).or_else(|| parse_poll_turn(value.get("last_agent")));
+    PollSnapshot {
+        loading: false,
+        last_user,
+        last_agent,
+    }
+}
+
+fn snapshot_to_response_meta(snap: &PollSnapshot) -> BridgeResponseMeta {
+    if snap.loading {
+        return BridgeResponseMeta {
+            key: -1,
+            text: String::new(),
+            loading: true,
+        };
+    }
+    match &snap.last_agent {
+        Some(agent) => BridgeResponseMeta {
+            key: agent.index,
+            text: agent.text.clone(),
+            loading: false,
+        },
+        None => BridgeResponseMeta {
+            key: -1,
+            text: String::new(),
+            loading: false,
+        },
+    }
 }
 
 fn parse_json_value_deep(raw: &str) -> Option<serde_json::Value> {
@@ -703,11 +743,152 @@ fn store_and_emit_agent_response(
     emit_agent_chat_event(app, agent_id, "agent", -1, text)
 }
 
+fn seed_sync_from_snapshot(sync_state: &mut AgentSyncState, snap: &PollSnapshot) {
+    if snap.loading {
+        return;
+    }
+    if let Some(user) = &snap.last_user {
+        sync_state.emitted_keys.insert(user.index);
+        sync_state
+            .emitted_texts
+            .insert(user.index, user.text.clone());
+    }
+    if let Some(agent) = &snap.last_agent {
+        sync_state.emitted_keys.insert(agent.index);
+        sync_state
+            .emitted_texts
+            .insert(agent.index, agent.text.clone());
+        sync_state.bridge_baseline = agent.text.clone();
+        sync_state.last_emitted_bridge_text = agent.text.clone();
+    }
+    sync_state.seeded = true;
+}
+
+fn messages_from_snapshot(snap: &PollSnapshot) -> Vec<ChatMessage> {
+    let mut messages = Vec::new();
+    if snap.loading {
+        return messages;
+    }
+    if let Some(user) = &snap.last_user {
+        messages.push(ChatMessage {
+            key: user.index,
+            role: "user".to_string(),
+            text: user.text.clone(),
+        });
+    }
+    if let Some(agent) = &snap.last_agent {
+        messages.push(ChatMessage {
+            key: agent.index,
+            role: "agent".to_string(),
+            text: agent.text.clone(),
+        });
+    }
+    messages
+}
+
+fn emit_snapshot_conversation(
+    app: &AppHandle,
+    agent_id: &str,
+    snap: &PollSnapshot,
+    stable_ms: u64,
+) {
+    let messages = messages_from_snapshot(snap);
+    if messages.is_empty() {
+        return;
+    }
+
+    let mut ready_messages: Vec<ChatMessage> = Vec::new();
+    {
+        let state = app.state::<WebviewState>();
+        let mut sync_states = match state.sync_states.lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let sync_state = sync_states
+            .entry(agent_id.to_string())
+            .or_insert_with(AgentSyncState::new);
+
+        if !sync_state.seeded {
+            seed_sync_from_snapshot(sync_state, snap);
+            return;
+        }
+
+        for message in messages {
+            if should_skip_sync_message(sync_state, &message) {
+                continue;
+            }
+
+            let required_stable = if message.role == "agent" {
+                agent_emit_stable_ms(&message.text, stable_ms)
+            } else {
+                stable_ms
+            };
+
+            let now = Instant::now();
+            match sync_state.stable_tracker.get(&message.key) {
+                Some((last_text, since)) if last_text == &message.text => {
+                    if now.duration_since(*since) >= Duration::from_millis(required_stable) {
+                        sync_state.emitted_keys.insert(message.key);
+                        sync_state
+                            .emitted_texts
+                            .insert(message.key, message.text.clone());
+                        sync_state.stable_tracker.remove(&message.key);
+                        ready_messages.push(message);
+                    }
+                }
+                _ => {
+                    if message.role == "agent" {
+                        if let Some((prev_text, _)) = sync_state.stable_tracker.get(&message.key) {
+                            if prev_text.contains("BEGIN_TOOL")
+                                && !message.text.contains("BEGIN_TOOL")
+                            {
+                                let already_emitted_tool = sync_state
+                                    .emitted_texts
+                                    .get(&message.key)
+                                    .map(|t| t.contains("BEGIN_TOOL"))
+                                    .unwrap_or(false);
+                                if !already_emitted_tool {
+                                    sync_state.emitted_keys.insert(message.key);
+                                    sync_state
+                                        .emitted_texts
+                                        .insert(message.key, prev_text.clone());
+                                    ready_messages.push(ChatMessage {
+                                        key: message.key,
+                                        role: message.role.clone(),
+                                        text: prev_text.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    sync_state
+                        .stable_tracker
+                        .insert(message.key, (message.text.clone(), now));
+                }
+            }
+        }
+    }
+
+    for message in ready_messages {
+        emit_chat_message(app, agent_id, &message);
+    }
+}
+
 fn reset_bridge_baseline_on_send(app: &AppHandle, label: &str, agent_id: &str) {
-    let baseline = eval_webview_json(app, label, BRIDGE_RESPONSE_EXPR)
+    let snap = eval_webview_json(app, label, POLL_SNAPSHOT_EXPR)
         .ok()
-        .map(|raw| parse_bridge_response_meta(&raw).text)
+        .map(|raw| parse_poll_snapshot(&raw))
+        .unwrap_or(PollSnapshot {
+            loading: false,
+            last_user: None,
+            last_agent: None,
+        });
+    let baseline = snap
+        .last_agent
+        .as_ref()
+        .map(|a| a.text.clone())
         .unwrap_or_default();
+    let baseline_user_index = snap.last_user.as_ref().map(|u| u.index);
 
     let state = app.state::<WebviewState>();
     let mut sync_states = match state.sync_states.lock() {
@@ -715,34 +896,29 @@ fn reset_bridge_baseline_on_send(app: &AppHandle, label: &str, agent_id: &str) {
         Err(_) => return,
     };
     if let Some(sync_state) = sync_states.get_mut(agent_id) {
-        sync_state.on_send(baseline);
+        sync_state.on_send(baseline, baseline_user_index);
     }
 }
 
 fn process_bridge_response_sync(
     app: &AppHandle,
-    label: &str,
     agent_id: &str,
+    snap: &PollSnapshot,
     stable_ms: u64,
     conversation_empty: bool,
 ) {
-    let raw = eval_webview_json(app, label, BRIDGE_RESPONSE_EXPR).unwrap_or_default();
-    let meta = parse_bridge_response_meta(&raw);
-    if meta.text.is_empty() {
-        return;
-    }
-
-    // 生成中不定稿，避免流式中间态误报缺 END_TOOL
-    // 已含完整 END_TOOL 时仍定稿（站点残留 typing 类会误报 loading）
-    if meta.loading
-        && !(meta.text.contains("BEGIN_TOOL") && meta.text.contains("END_TOOL"))
-    {
+    if snap.loading {
         let state = app.state::<WebviewState>();
         if let Ok(mut sync_states) = state.sync_states.lock() {
             if let Some(sync_state) = sync_states.get_mut(agent_id) {
                 sync_state.bridge_stable_tracker = None;
             }
         }
+        return;
+    }
+
+    let meta = snapshot_to_response_meta(snap);
+    if meta.text.is_empty() {
         return;
     }
 
@@ -768,12 +944,21 @@ fn process_bridge_response_sync(
             return;
         }
 
-        if !has_new_bridge_text(&sync_state.bridge_baseline, &meta.text) {
+        if let Some(baseline_user_index) = sync_state.baseline_user_index {
+            if let Some(user) = &snap.last_user {
+                if user.index <= baseline_user_index
+                    && !has_new_bridge_text(&sync_state.bridge_baseline, &meta.text)
+                {
+                    sync_state.bridge_stable_tracker = None;
+                    return;
+                }
+            }
+        } else if !has_new_bridge_text(&sync_state.bridge_baseline, &meta.text) {
             sync_state.bridge_stable_tracker = None;
             return;
         }
 
-        if meta.key >= 0 && meta.key > 0 {
+        if meta.key >= 0 {
             sync_state.bridge_baseline = meta.text.clone();
         }
 
@@ -844,7 +1029,7 @@ async fn ensure_bridge_injected(app: &AppHandle, label: &str, _agent_id: &str) {
 if (window.__agentEditorBridge) {
   window.__agentEditorBridge.onEditorMessage({
     type: 'config',
-    pollIntervalMs: 500,
+    pollIntervalMs: 1000,
     stableMs: 2000
   });
 }
@@ -855,13 +1040,13 @@ if (window.__agentEditorBridge) {
 }
 
 async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String) {
-    let poll_interval_ms = 800u64;
+    let poll_interval_ms = 1000u64;
     let stable_ms = 1500u64;
 
     ensure_bridge_injected(&app, &label, &agent_id).await;
-    if let Ok(raw) = eval_webview_json(&app, &label, CONVERSATION_CAPTURE_EXPR) {
-        let baseline = parse_conversation_messages(&raw);
-        if !baseline.is_empty() {
+    if let Ok(raw) = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR) {
+        let snap = parse_poll_snapshot(&raw);
+        if !snap.loading && (snap.last_user.is_some() || snap.last_agent.is_some()) {
             let state = app.state::<WebviewState>();
             let mut sync_states = match state.sync_states.lock() {
                 Ok(value) => value,
@@ -870,13 +1055,7 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
             let sync_state = sync_states
                 .entry(agent_id.clone())
                 .or_insert_with(AgentSyncState::new);
-            for message in baseline {
-                sync_state.emitted_keys.insert(message.key);
-                sync_state
-                    .emitted_texts
-                    .insert(message.key, message.text.clone());
-            }
-            sync_state.seeded = true;
+            seed_sync_from_snapshot(sync_state, &snap);
         }
     }
 
@@ -901,97 +1080,12 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
         let _ = eval_webview_json(&app, &label, BRIDGE_SCHEDULE_COPY_EXPR);
         flush_bridge_queues(&app, &label, &agent_id);
 
-        let raw = eval_webview_json(&app, &label, CONVERSATION_CAPTURE_EXPR).unwrap_or_default();
+        let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
+        let snap = parse_poll_snapshot(&raw);
+        let conversation_empty = snap.last_user.is_none() && snap.last_agent.is_none();
 
-        let messages = parse_conversation_messages(&raw);
-        let conversation_empty = messages.is_empty();
-
-        if !conversation_empty {
-            let mut ready_messages: Vec<ChatMessage> = Vec::new();
-            {
-                let state = app.state::<WebviewState>();
-                let mut sync_states = match state.sync_states.lock() {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                };
-                let sync_state = sync_states
-                    .entry(agent_id.clone())
-                    .or_insert_with(AgentSyncState::new);
-
-                for message in messages {
-                    if should_skip_sync_message(sync_state, &message) {
-                        continue;
-                    }
-
-                    let required_stable = if message.role == "agent" {
-                        agent_emit_stable_ms(&message.text, stable_ms)
-                    } else {
-                        stable_ms
-                    };
-
-                    let now = Instant::now();
-                    match sync_state.stable_tracker.get(&message.key) {
-                        Some((last_text, since)) if last_text == &message.text => {
-                            if now.duration_since(*since)
-                                >= Duration::from_millis(required_stable)
-                            {
-                                sync_state.emitted_keys.insert(message.key);
-                                sync_state
-                                    .emitted_texts
-                                    .insert(message.key, message.text.clone());
-                                sync_state.stable_tracker.remove(&message.key);
-                                ready_messages.push(message);
-                            }
-                        }
-                        _ => {
-                            if message.role == "agent" {
-                                if let Some((prev_text, _)) =
-                                    sync_state.stable_tracker.get(&message.key)
-                                {
-                                    if prev_text.contains("BEGIN_TOOL")
-                                        && !message.text.contains("BEGIN_TOOL")
-                                    {
-                                        let already_emitted_tool = sync_state
-                                            .emitted_texts
-                                            .get(&message.key)
-                                            .map(|t| t.contains("BEGIN_TOOL"))
-                                            .unwrap_or(false);
-                                        if !already_emitted_tool {
-                                            sync_state.emitted_keys.insert(message.key);
-                                            sync_state.emitted_texts.insert(
-                                                message.key,
-                                                prev_text.clone(),
-                                            );
-                                            ready_messages.push(ChatMessage {
-                                                key: message.key,
-                                                role: message.role.clone(),
-                                                text: prev_text.clone(),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            sync_state.stable_tracker.insert(
-                                message.key,
-                                (message.text.clone(), now),
-                            );
-                        }
-                    }
-                }
-            }
-
-            for message in ready_messages {
-                emit_chat_message(&app, &agent_id, &message);
-            }
-        }
-
-        process_bridge_response_sync(
-            &app,
-            &label,
-            &agent_id,
-            stable_ms,
-            conversation_empty,
-        );
+        emit_snapshot_conversation(&app, &agent_id, &snap, stable_ms);
+        process_bridge_response_sync(&app, &agent_id, &snap, stable_ms, conversation_empty);
     }
 }
 
@@ -999,18 +1093,19 @@ fn start_bridge_response_watch(app: &AppHandle, label: String, agent_id: String)
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let stable_ms = 1200u64;
-        let poll_ms = 400u64;
+        let poll_ms = 1000u64;
         for _ in 0..225 {
             async_delay(poll_ms).await;
             if app.get_webview(&label).is_none() {
                 break;
             }
-            let conversation_raw =
-                eval_webview_json(&app, &label, CONVERSATION_CAPTURE_EXPR).unwrap_or_default();
-            let conversation_empty = parse_conversation_messages(&conversation_raw).is_empty();
+            let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
+            let snap = parse_poll_snapshot(&raw);
+            let conversation_empty = snap.last_user.is_none() && snap.last_agent.is_none();
             let _ = eval_webview_json(&app, &label, BRIDGE_SCHEDULE_COPY_EXPR);
             flush_bridge_queues(&app, &label, &agent_id);
-            process_bridge_response_sync(&app, &label, &agent_id, stable_ms, conversation_empty);
+            emit_snapshot_conversation(&app, &agent_id, &snap, stable_ms);
+            process_bridge_response_sync(&app, &agent_id, &snap, stable_ms, conversation_empty);
         }
     });
 }
@@ -1043,7 +1138,10 @@ fn start_conversation_sync(app: &AppHandle, label: String, agent_id: String) {
 static POPUP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(windows)]
-fn enable_webview2_default_context_menu(platform_webview: &tauri::webview::PlatformWebview) {
+fn configure_webview2_settings(
+    platform_webview: &tauri::webview::PlatformWebview,
+    enable_devtools: bool,
+) {
     unsafe {
         let Ok(core) = platform_webview.controller().CoreWebView2() else {
             return;
@@ -1052,7 +1150,23 @@ fn enable_webview2_default_context_menu(platform_webview: &tauri::webview::Platf
             return;
         };
         let _ = settings.SetAreDefaultContextMenusEnabled(true);
+        let _ = settings.SetAreDevToolsEnabled(enable_devtools);
     }
+}
+
+/// debug 或 adminMode 时启用 DevTools
+pub fn should_enable_devtools() -> bool {
+    crate::is_admin_mode() || cfg!(debug_assertions)
+}
+
+pub fn apply_webview_devtools(window: &tauri::WebviewWindow, enable: bool) {
+    #[cfg(windows)]
+    {
+        let _ = window.with_webview(move |platform_webview| {
+            configure_webview2_settings(&platform_webview, enable);
+        });
+    }
+    let _ = enable;
 }
 
 fn open_agent_popup_window(
@@ -1074,6 +1188,7 @@ fn open_agent_popup_window(
         .title("登录")
         .inner_size(960.0, 720.0)
         .center()
+        .devtools(should_enable_devtools())
         .initialization_script(
             r#"(function(){window.addEventListener('contextmenu',function(e){e.stopImmediatePropagation();},true);})();"#,
         )
@@ -1090,8 +1205,9 @@ fn open_agent_popup_window(
         Ok(window) => {
             #[cfg(windows)]
             {
-                let _ = window.with_webview(|platform_webview| {
-                    enable_webview2_default_context_menu(&platform_webview);
+                let enable = should_enable_devtools();
+                let _ = window.with_webview(move |platform_webview| {
+                    configure_webview2_settings(&platform_webview, enable);
                 });
             }
             NewWindowResponse::Create { window }
@@ -1130,7 +1246,7 @@ pub async fn create_agent_webview(
     let parsed_url: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
 
     let injection = build_injection_script(&template_script, &bridge_script);
-    let poll_interval = 500;
+    let poll_interval = 1000;
     let stable_ms = 2000;
 
     let init_script = format!(
@@ -1150,7 +1266,6 @@ pub async fn create_agent_webview(
     if (cfg.inputMode) msg.inputMode = cfg.inputMode;
     if (cfg.typeDelayMs != null) msg.typeDelayMs = cfg.typeDelayMs;
     if (cfg.typeStrategy) msg.typeStrategy = cfg.typeStrategy;
-    if (typeof cfg.readToolViaCopy === 'boolean') msg.readToolViaCopy = cfg.readToolViaCopy;
   }}
   window.__agentEditorBridge.onEditorMessage(msg);
   window.__agentEditorBridge.onEditorMessage({{ type: 'config', agentId: '{agent_id}' }});
@@ -1193,6 +1308,7 @@ pub async fn create_agent_webview(
             .inner_size(width, height)
             .center()
             .visible(false)
+            .devtools(should_enable_devtools())
             .initialization_script(&init_for_create)
             .data_directory(data_dir)
             .on_new_window(move |url, features| {
@@ -1202,8 +1318,9 @@ pub async fn create_agent_webview(
             let window = builder.build().map_err(|e| e.to_string())?;
             #[cfg(windows)]
             {
-                let _ = window.with_webview(|platform_webview| {
-                    enable_webview2_default_context_menu(&platform_webview);
+                let enable = should_enable_devtools();
+                let _ = window.with_webview(move |platform_webview| {
+                    configure_webview2_settings(&platform_webview, enable);
                 });
             }
             attach_host_window_close_cleanup(&app_for_create, &window, &label_for_create);
@@ -1226,6 +1343,7 @@ pub async fn create_agent_webview(
             .initialization_script(&init_for_create)
             .data_directory(data_dir)
             .auto_resize()
+            .devtools(should_enable_devtools())
             .on_new_window(move |url, features| {
                 open_agent_popup_window(&app_for_popup, &parent_label, url, features)
             });
@@ -1248,8 +1366,9 @@ pub async fn create_agent_webview(
 
             #[cfg(windows)]
             {
-                let _ = child.with_webview(|platform_webview| {
-                    enable_webview2_default_context_menu(&platform_webview);
+                let enable = should_enable_devtools();
+                let _ = child.with_webview(move |platform_webview| {
+                    configure_webview2_settings(&platform_webview, enable);
                 });
             }
             Ok(())
@@ -1559,11 +1678,11 @@ pub fn debug_query_agent(app: &AppHandle, agent_id: &str) -> Result<serde_json::
 
     let bridge_raw = eval_webview_json(app, &label, BRIDGE_CHECK_EXPR)
         .unwrap_or_else(|err| format!("\"{err}\""));
-    let conversation_raw =
-        eval_webview_json(app, &label, CONVERSATION_CAPTURE_EXPR).unwrap_or_default();
+    let snapshot_raw = eval_webview_json(app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
+    let snap = parse_poll_snapshot(&snapshot_raw);
+    let messages = messages_from_snapshot(&snap);
     let dom_raw = eval_webview_json(app, &label, DEBUG_DOM_EXPR).unwrap_or_default();
     let inspect_raw = eval_webview_json(app, &label, AGENT_INSPECT_EXPR).unwrap_or_default();
-    let messages = parse_conversation_messages(&conversation_raw);
     let dom_value = serde_json::from_str::<serde_json::Value>(&dom_raw)
         .unwrap_or(serde_json::Value::String(dom_raw));
     let inspect_value = serde_json::from_str::<serde_json::Value>(&inspect_raw)
@@ -1588,7 +1707,18 @@ pub fn debug_query_agent(app: &AppHandle, agent_id: &str) -> Result<serde_json::
             "role": message.role,
             "text": message.text,
         })).collect::<Vec<_>>(),
-        "conversationRaw": conversation_raw,
+        "snapshotRaw": snapshot_raw,
+        "snapshot": {
+            "loading": snap.loading,
+            "lastUser": snap.last_user.as_ref().map(|u| serde_json::json!({
+                "index": u.index,
+                "text": u.text,
+            })),
+            "lastAgent": snap.last_agent.as_ref().map(|a| serde_json::json!({
+                "index": a.index,
+                "text": a.text,
+            })),
+        },
         "dom": dom_value,
         "inspect": inspect_value,
         "sync": sync_info,
@@ -1606,8 +1736,9 @@ const LAST_FILE_OP_EXPR: &str = "JSON.stringify(window.__agentEditorLastFileOp||
 
 pub fn debug_query_bridge_response(app: &AppHandle, agent_id: &str) -> Result<serde_json::Value, String> {
     let label = format!("agent-{}", agent_id);
-    let raw = eval_webview_json(app, &label, BRIDGE_RESPONSE_EXPR).unwrap_or_default();
-    let parsed = parse_bridge_response_meta(&raw);
+    let raw = eval_webview_json(app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
+    let snap = parse_poll_snapshot(&raw);
+    let parsed = snapshot_to_response_meta(&snap);
     let copy_raw = eval_webview_json(app, &label, BRIDGE_COPY_DEBUG_EXPR).unwrap_or_default();
     let copy_debug = serde_json::from_str::<serde_json::Value>(&copy_raw)
         .unwrap_or(serde_json::Value::String(copy_raw));
@@ -1618,6 +1749,18 @@ pub fn debug_query_bridge_response(app: &AppHandle, agent_id: &str) -> Result<se
         "meta": {
             "key": parsed.key,
             "text": parsed.text,
+            "loading": parsed.loading,
+        },
+        "snapshot": {
+            "loading": snap.loading,
+            "lastUser": snap.last_user.as_ref().map(|u| serde_json::json!({
+                "index": u.index,
+                "text": u.text,
+            })),
+            "lastAgent": snap.last_agent.as_ref().map(|a| serde_json::json!({
+                "index": a.index,
+                "text": a.text,
+            })),
         },
         "copy": copy_debug,
     }))

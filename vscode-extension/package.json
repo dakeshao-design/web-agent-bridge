@@ -38,7 +38,7 @@
     "commands": [
       {
         "command": "webAgentBridge.openAgentsConfig",
-        "title": "WAB: Open Agents Config"
+        "title": "WAB: Open Bridge Scripts Folder"
       },
       {
         "command": "webAgentBridge.openAppConfig",

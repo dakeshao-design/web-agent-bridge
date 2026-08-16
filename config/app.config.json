@@ -5,7 +5,7 @@
     "autoSave": false
   },
   "agentBridge": {
-    "responsePollIntervalMs": 500,
+    "responsePollIntervalMs": 1000,
     "responseStableCount": 3,
     "maxContextFiles": 5,
     "autoApply": true

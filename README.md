@@ -40,7 +40,7 @@ pnpm tauri dev
 
 User config at runtime: `%APPDATA%\agent-editor\` (`config/` + `scripts/`).
 
-To add a site: copy `scripts/_bridge-template.js`, fill selectors, and register it in `agents.json`.
+To add a site: copy the JS sample from `scripts/_bridge-template.md` to `scripts/xxx-bridge.js`, fill the `==BridgeScript==` header and site adapters.
 
 ## Layout
 

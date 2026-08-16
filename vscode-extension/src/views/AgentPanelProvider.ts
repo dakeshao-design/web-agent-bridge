@@ -104,7 +104,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div class="toolbar-actions">
         <button data-cmd="showLogin" title="打开登录窗">登录</button>
         <button data-cmd="killTerminal" title="终止所有 run_powershell 进程">终止终端</button>
-        <button data-cmd="openConfig" title="打开 agents.json">配置</button>
+        <button data-cmd="openConfig" title="打开桥接脚本目录">配置</button>
         <button data-cmd="showPermissions" title="工具权限">权限</button>
         <button data-cmd="reload" title="重新加载">刷新</button>
       </div>

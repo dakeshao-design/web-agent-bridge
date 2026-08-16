@@ -7,7 +7,7 @@ import type { FileToolHandler } from '../types';
 export const applyReadFile: FileToolHandler = async (op, ctx) => {
   const data = await ctx.fileService.read(op.path);
   const lineCount = countContentLines(data);
-  const limit = ctx.fileLineLimit;
+  const limit = ctx.readFileLineLimit;
   if (limit != null && limit > 0 && lineCount > limit) {
     const message = buildReadFileOverLimitMessage(lineCount, limit);
     ctx.addLogEntry(op, 'error', message);

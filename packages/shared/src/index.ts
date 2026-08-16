@@ -29,10 +29,16 @@ export {
   buildToolTable,
 } from './agent/agentModePrompt.js';
 export {
-  parseFileLineLimitFromBridgeScript,
+  parseFileLineLimitsFromBridgeScript,
   countContentLines,
   buildReadFileOverLimitMessage,
 } from './agent/fileLineLimit.js';
+export type { FileLineLimits } from './agent/fileLineLimit.js';
+export {
+  parseBridgeScriptMeta,
+  isSiteBridgeScriptFileName,
+} from './agent/parseBridgeScriptMeta.js';
+export type { BridgeScriptEntry } from './config/ConfigLoader.js';
 export {
   hasIncompleteCallTool,
   isIncompleteFromLastConversation,

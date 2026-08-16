@@ -101,7 +101,6 @@ export class AgentHostBridge implements IAgentBridge {
     if (agent.inputMode) bridgeConfig.inputMode = agent.inputMode;
     if (agent.typeDelayMs != null) bridgeConfig.typeDelayMs = agent.typeDelayMs;
     if (agent.typeStrategy) bridgeConfig.typeStrategy = agent.typeStrategy;
-    if (agent.readToolViaCopy != null) bridgeConfig.readToolViaCopy = agent.readToolViaCopy;
 
     await this.host.request('POST', '/agents/create', {
       agentId: agent.id,

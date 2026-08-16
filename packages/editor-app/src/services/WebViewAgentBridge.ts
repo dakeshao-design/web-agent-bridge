@@ -112,9 +112,6 @@ export class WebViewAgentBridge implements IAgentBridge {
     if (agent.typeStrategy) {
       bridgeConfig.typeStrategy = agent.typeStrategy;
     }
-    if (agent.readToolViaCopy != null) {
-      bridgeConfig.readToolViaCopy = agent.readToolViaCopy;
-    }
 
     await invoke('create_agent_webview', {
       label: `agent-${agent.id}`,

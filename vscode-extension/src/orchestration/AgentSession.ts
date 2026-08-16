@@ -20,7 +20,7 @@ import {
   isToolCallAlreadyReported,
   mergeToolPermissions,
   buildSelectionMessage,
-  parseFileLineLimitFromBridgeScript,
+  parseFileLineLimitsFromBridgeScript,
   POWERSHELL_PROGRESS_INTERVAL_MS,
   parsePowershellWaitDecision,
   resolveEffectivePermission,
@@ -249,13 +249,13 @@ export class AgentSession {
 
   async reloadAgents(): Promise<void> {
     const loader = new ConfigLoader({
-      agentsPath: this.configService.getAgentsPath(),
       appConfigPath: this.configService.getAppConfigPath(),
       fetchJson: async (p) => {
         const uri = vscode.Uri.file(p);
         const data = await vscode.workspace.fs.readFile(uri);
         return new TextDecoder().decode(data);
       },
+      listBridgeScripts: () => this.configService.listBridgeScripts(),
     });
     await loader.load();
     const app = loader.getAppConfig();
@@ -281,8 +281,12 @@ export class AgentSession {
       list.map(async (agent) => {
         try {
           const src = await this.configService.readBridgeScript(agent.injectScript);
-          const limit = parseFileLineLimitFromBridgeScript(src);
-          return limit != null ? { ...agent, fileLineLimit: limit } : agent;
+          const limits = parseFileLineLimitsFromBridgeScript(src);
+          return {
+            ...agent,
+            ...(limits.read != null ? { readFileLineLimit: limits.read } : {}),
+            ...(limits.write != null ? { writeFileLineLimit: limits.write } : {}),
+          };
         } catch {
           return agent;
         }
@@ -373,8 +377,13 @@ export class AgentSession {
 
   async sendAgentMode(): Promise<void> {
     const root = this.fileService.getWorkspaceRoot();
-    const limit = this.agents.find((a) => a.id === this.activeAgentId)?.fileLineLimit;
-    const msg = buildAgentModePrompt(root || undefined, limit, this.toolPermissions);
+    const agent = this.agents.find((a) => a.id === this.activeAgentId);
+    const msg = buildAgentModePrompt(
+      root || undefined,
+      agent?.readFileLineLimit,
+      this.toolPermissions,
+      agent?.writeFileLineLimit
+    );
     this.agentModeEnabled = true;
     await this.sendChat(msg);
   }
@@ -600,7 +609,7 @@ export class AgentSession {
             return isIncompleteFromLastConversation(text, latest);
           },
           onConfirm: async () => {
-            const limit = this.agents.find((a) => a.id === agentId)?.fileLineLimit;
+            const limit = this.agents.find((a) => a.id === agentId)?.writeFileLineLimit;
             const hint = buildIncompleteCallToolHint(limit);
             this.chats.push({ agentId, role: 'user', text: hint });
             await this.sendToolResult(agentId, hint);
@@ -635,7 +644,7 @@ export class AgentSession {
     this.setStatus(agentId, 'waiting');
     let awaitAgentReply = false;
 
-    const fileLineLimit = this.agents.find((a) => a.id === agentId)?.fileLineLimit;
+    const readFileLineLimit = this.agents.find((a) => a.id === agentId)?.readFileLineLimit;
 
     try {
     for (const op of operations) {
@@ -680,7 +689,7 @@ export class AgentSession {
         workspaceRoot: this.fileService.getWorkspaceRoot(),
         resolvePath: (p) => this.fileService.resolvePath(p),
         addLogEntry: (operation, status, message) => this.addLog(operation, status, message),
-        fileLineLimit,
+        readFileLineLimit,
         openInEditor: async (filePath, content) => {
           const uri = vscode.Uri.file(this.fileService.resolvePath(filePath));
           const doc = await vscode.workspace.openTextDocument(uri);

@@ -40,15 +40,15 @@ export function isIncompleteFromLastConversation(
 }
 
 /** 截断未落盘时回传给 Agent 的提示 */
-export function buildIncompleteCallToolHint(fileLineLimit?: number): string {
+export function buildIncompleteCallToolHint(writeFileLineLimit?: number): string {
   const lines: string[] = [
     '[REPORT_TOOL] incomplete_call_tool',
     'status: error',
     'message: 工具调用不完整（缺少 END_TOOL 或 call-tool 未闭合），未执行、未落盘。',
   ];
-  if (fileLineLimit != null && fileLineLimit > 0) {
+  if (writeFileLineLimit != null && writeFileLineLimit > 0) {
     lines.push(
-      `hint: 请按行分片重试：每段不超过 ${fileLineLimit} 行，只在换行处断开；先 write_file 写第 1 段，再多次 append_file。不要从中间 append。`
+      `hint: 请按行分片重试：每段不超过 ${writeFileLineLimit} 行，只在换行处断开；先 write_file 写第 1 段，再多次 append_file。不要从中间 append。`
     );
   } else {
     lines.push('hint: 请重新输出完整的 call-tool 块（含 END_TOOL）。大文件请分多轮写入。');

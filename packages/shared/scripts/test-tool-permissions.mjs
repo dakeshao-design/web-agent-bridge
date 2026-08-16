@@ -25,6 +25,17 @@ assert.equal(
   resolveEffectivePermission('write_file', op, 'C:/work/proj', { write_file: 'deny' }),
   'deny'
 );
+assert.equal(
+  resolveEffectivePermission(
+    'write_file',
+    op,
+    'C:/work/proj',
+    { write_file: 'allow' },
+    undefined,
+    { skipOutsideWorkspaceDowngrade: true }
+  ),
+  'allow'
+);
 
 const msg = buildPermissionAskMessage('write_file', op);
 assert.match(msg, /工具: write_file/);

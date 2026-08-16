@@ -28,46 +28,62 @@ export function buildToolTable(tools: readonly AgentToolDefinition[] = AGENT_TOO
   return [header, separator, ...rows].join('\n');
 }
 
-function buildFileLineLimitSection(fileLineLimit: number): string {
+function buildFileLineLimitSection(readLimit?: number, writeLimit?: number): string {
+  const parts: string[] = [];
+  if (writeLimit != null && writeLimit > 0) {
+    parts.push(
+      `- 单次 \`write_file\` / \`append_file\` / \`edit_file_range\` 的 content 不要超过 **${writeLimit} 行**，只在换行处拆分`,
+      `- 大文件：先 \`write_file\` 写第 1 段，再多次 \`append_file\`；每轮只调用一个工具并等待结果`,
+      `- 若输出被截断且没有完整 \`END_TOOL\`，表示**未落盘**；须从小块 \`write_file\` 重新分片，不能从中间 \`append\``
+    );
+  }
+  if (readLimit != null && readLimit > 0) {
+    parts.push(
+      `- \`read_file\`：整文件可能超过 ${readLimit} 行时，先 \`count_file_rows\`，再用 \`read_file_range\` 分段读，单次 range 不超过 ${readLimit} 行`
+    );
+  }
+  if (!parts.length) return '';
   return `
-## 文件行数上限（${fileLineLimit} 行）
+## 文件行数上限
 
-- 单次 \`write_file\` / \`append_file\` / \`edit_file_range\` 的 content 建议不超过 **${fileLineLimit} 行**，只在换行处拆分
-- 大文件：先 \`write_file\` 写第 1 段，再多次 \`append_file\`；每轮只调用一个工具并等待结果
-- \`read_file\`：整文件可能超过 ${fileLineLimit} 行时，先 \`count_file_rows\`，再用 \`read_file_range\` 分段读，单次 range 不超过 ${fileLineLimit} 行
-- 若输出被截断且没有完整 \`END_TOOL\`，表示**未落盘**；须从小块 \`write_file\` 重新分片，不能从中间 \`append\`
+${parts.join('\n')}
 `;
 }
 
 export function buildAgentModePrompt(
   workspaceRoot?: string,
-  fileLineLimit?: number,
-  toolPermissions?: ToolPermissionsConfig | null
+  readFileLineLimit?: number,
+  toolPermissions?: ToolPermissionsConfig | null,
+  writeFileLineLimit?: number
 ): string {
   void workspaceRoot;
   const tools = listToolsForPrompt(toolPermissions);
-  const limitSection =
-    fileLineLimit != null && fileLineLimit > 0
-      ? buildFileLineLimitSection(fileLineLimit)
-      : '';
+  const limitSection = buildFileLineLimitSection(readFileLineLimit, writeFileLineLimit);
 
-  return `你当前处于 **Agent 模式**。编辑器会解析你回复中的工具调用并执行本地文件操作。
+  return `你处于 **Agent 模式** 下，当前工作区只有使用 \`call-tool\` 代码块调用工具才能访问。
+
+如果需要调用工具，严格遵守如下格式回复：
+
+${AGENT_MODE_TOOL_FORMAT}
+
+<tool_use_instructions>
 
 ## 可用工具
 
 ${buildToolTable(tools)}
 
-## 调用格式
-
-使用 \`call-tool\` 代码块，结构如下：
-
-${AGENT_MODE_TOOL_FORMAT}
-
 ## 调用规则
 
-- 外层围栏须使用 **至少 6 个反引号**，且须 **长于** content 内任何代码围栏，避免站点 Markdown 提前截断
-- **每次回复只调用一个工具**，不要在同一条回复中输出多个 \`call-tool\` 代码块
-- 等待编辑器回传该工具的执行结果后，再根据结果决定下一步是否继续调用工具
+- 请严格遵守精确的语法。不要使用 XML 标签、JSON 对象或任何其他格式调用工具。
+- 在回复中只输出 \`call-tool\` 代码块，不要有任何其他内容。
+- 始终在新行开始 \`call-tool\` 代码块，不要有任何前导空格或缩进。
+- 外层围栏须使用 **至少 6 个反引号**，且须 **长于** content 内任何代码围栏，避免 \`call-tool\` 代码块提前截断。
+- **每次回复只调用一个工具**，不要在一条回复中输出多个 \`call-tool\` 代码块。
+- 优先使用以当前工作区为根的相对路径，而不是绝对路径。
+- 禁止使用未列出的工具。
+- 如果需求可以通过列出的工具解决，请使用工具而不是推测。
+- 不要对假设的文件执行操作，请使用工具查找相关文件。
+
 ${limitSection}
 ## 示例
 
@@ -79,7 +95,7 @@ END_ARG
 BEGIN_ARG: content
 # 指南
 
-示例：
+输出日志：
 
 \`\`\`js
 console.log(1)
@@ -87,8 +103,7 @@ console.log(1)
 END_ARG
 END_TOOL
 \`\`\`\`\`\`
+</tool_use_instructions>
 
-请根据用户需求，在需要操作本地文件时按上述格式输出工具调用。
-
-本轮不要回答，等待用户输入。`;
+本轮不要回复，等待用户输入。`;
 }

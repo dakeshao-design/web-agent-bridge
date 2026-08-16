@@ -237,12 +237,12 @@ export class TauriFileService implements IFileService {
   }
 
   async readBridgeScript(relativePath: string): Promise<string> {
-
     return invoke<string>('read_bridge_script', { relativePath });
-
   }
 
-
+  async listBridgeScripts(): Promise<{ relativePath: string; content: string }[]> {
+    return invoke('list_bridge_scripts');
+  }
 
   async appendLog(path: string, content: string): Promise<void> {
     const resolved = this.resolvePath(path);

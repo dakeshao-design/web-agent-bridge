@@ -8,8 +8,8 @@ export interface ToolApplyContext {
   resolvePath: (path: string) => string;
   addLogEntry: (operation: FileOperation, status: LogStatus, message?: string) => void;
   openInEditor?: (path: string, content: string) => Promise<void>;
-  /** 当前 Agent 的行数上限；未设置则不限制 */
-  fileLineLimit?: number;
+  /** 当前 Agent 的读文件行数上限；未设置则不限制 */
+  readFileLineLimit?: number;
 }
 
 export type FileToolHandler = (

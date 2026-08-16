@@ -1,12 +1,19 @@
 import type { AgentsConfig, AppConfig } from './types.js';
 import { mergeToolPermissions } from '../agent/toolPermissions.js';
+import {
+  isSiteBridgeScriptFileName,
+  parseBridgeScriptMeta,
+} from '../agent/parseBridgeScriptMeta.js';
 
 export type ConfigChangeCallback = (config: { agents: AgentsConfig; app: AppConfig }) => void;
 
+export type BridgeScriptEntry = { relativePath: string; content: string };
+
 export interface ConfigLoaderOptions {
-  agentsPath: string;
   appConfigPath: string;
   fetchJson: (path: string) => Promise<string>;
+  listBridgeScripts: () => Promise<BridgeScriptEntry[]>;
+  /** 变更时回调；paths 仅作提示，实现方可忽略 */
   watch?: (paths: string[], onChange: () => void) => () => void;
 }
 
@@ -14,7 +21,7 @@ export class ConfigLoader {
   private agents: AgentsConfig = { agents: [] };
   private app: AppConfig = {
     editor: { theme: 'one-dark', tabSize: 2, autoSave: false },
-    agentBridge: { responsePollIntervalMs: 500, responseStableCount: 3, maxContextFiles: 5 },
+    agentBridge: { responsePollIntervalMs: 1000, responseStableCount: 3, maxContextFiles: 5 },
     fileBridge: {
       workspaceRoot: '',
       commandFormat: 'structured',
@@ -25,7 +32,7 @@ export class ConfigLoader {
   private unwatch?: () => void;
   private options: ConfigLoaderOptions;
   private lastAppRaw = '';
-  private lastAgentsRaw = '';
+  private lastAgentsFingerprint = '';
 
   constructor(options: ConfigLoaderOptions) {
     this.options = options;
@@ -33,21 +40,33 @@ export class ConfigLoader {
 
   async load(): Promise<void> {
     const appRaw = await this.options.fetchJson(this.options.appConfigPath);
-    let agentsRaw = '';
     let agents: AgentsConfig = { agents: [] };
+    let fingerprint = '';
 
     try {
-      agentsRaw = await this.options.fetchJson(this.options.agentsPath);
-      agents = JSON.parse(agentsRaw) as AgentsConfig;
+      const scripts = await this.options.listBridgeScripts();
+      const list = [];
+      for (const entry of scripts) {
+        const base = entry.relativePath.replace(/\\/g, '/').split('/').pop() || '';
+        if (!isSiteBridgeScriptFileName(base)) continue;
+        const meta = parseBridgeScriptMeta(entry.content, entry.relativePath.replace(/\\/g, '/'));
+        if (meta) list.push(meta);
+      }
+      agents = { agents: list };
+      fingerprint = scripts
+        .map((s) => `${s.relativePath}\n${s.content}`)
+        .sort()
+        .join('\n---\n');
     } catch (err) {
-      // 正式版可不带 agents.json
-      console.warn('[ConfigLoader] agents.json 加载失败，使用空列表。', err);
-      agentsRaw = '';
+      console.warn('[ConfigLoader] 桥接脚本加载失败，使用空列表。', err);
       agents = { agents: [] };
+      fingerprint = '';
     }
 
     const unchanged =
-      this.lastAppRaw === appRaw && this.lastAgentsRaw === agentsRaw && this.lastAppRaw !== '';
+      this.lastAppRaw === appRaw &&
+      this.lastAgentsFingerprint === fingerprint &&
+      this.lastAppRaw !== '';
     if (unchanged) {
       return;
     }
@@ -59,7 +78,7 @@ export class ConfigLoader {
     };
     this.agents = agents;
     this.lastAppRaw = appRaw;
-    this.lastAgentsRaw = agentsRaw;
+    this.lastAgentsFingerprint = fingerprint;
     this.notify();
   }
 
@@ -67,7 +86,7 @@ export class ConfigLoader {
     if (!this.options.watch) return;
     this.unwatch?.();
     this.unwatch = this.options.watch(
-      [this.options.agentsPath, this.options.appConfigPath],
+      [this.options.appConfigPath, 'scripts'],
       () => {
         this.load().catch(console.error);
       }

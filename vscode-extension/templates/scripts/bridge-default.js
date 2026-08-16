@@ -1,5 +1,5 @@
 /**
- * Agent 桥接默认业务实现
+ * Agent bridge default implementation
  */
 (function () {
   'use strict';
@@ -11,9 +11,6 @@
   function createBridge() {
     const REGISTER_NS = '__agentEditorBridgeRegister';
 
-    const DEFAULT_RESPONSE_SELECTORS =
-      '[data-message-author-role="assistant"], [class*="assistant"], [class*="markdown"]';
-
     const state = {
       lastResponse: '',
       stableSince: 0,
@@ -21,25 +18,23 @@
       responseCallback: null,
       responsePosted: false,
       seenChange: false,
-      resolvers: {},
-      cssSelectors: {},
-      pollIntervalMs: 500,
+      pollIntervalMs: 1000,
       stableMs: 2000,
       responseBaseline: '',
       responseBaselineKey: -1,
-      customGetResponse: null,
       inputMode: 'fill',
       typeDelayMs: 0,
       typeStrategy: 'keyboard',
       agentId: '',
       sendCaptureInstalled: false,
       inputLimitObserver: null,
-      readToolViaCopy: false,
-      fileLineLimit: 0,
+      inputLimitRemoverScheduled: false,
+      readFileLineLimit: 0,
+      writeFileLineLimit: 0,
+      site: null,
       copiedToolText: '',
       copiedToolAt: 0,
       copyReadInFlight: false,
-      copyReadBlockKey: '',
       copyReadBlockRef: '',
       copyReadFailCounts: {},
       pinnedToolText: '',
@@ -48,115 +43,149 @@
       pendingCommLogs: [],
       pendingChatMessages: [],
       pendingResetBaseline: false,
-      siteAdapter: null,
     };
-
-    function isLikelyFunctionSource(source) {
-      const text = String(source || '').trim();
-      return (
-        text.startsWith('(') ||
-        text.startsWith('function') ||
-        text.includes('=>')
-      );
-    }
-
-    function compileSelectorFn(source) {
-      if (!source || typeof source !== 'string') return null;
-      const trimmed = source.trim();
-      if (!trimmed || !isLikelyFunctionSource(trimmed)) return null;
-      try {
-        const fn = (0, eval)('(' + trimmed + ')');
-        return typeof fn === 'function' ? fn : null;
-      } catch (err) {
-        console.warn('[bridge] selector compile failed', err);
-        return null;
-      }
-    }
-
-    function applySelectorConfig(selectors) {
-      const config = { ...(selectors || {}) };
-      if (Object.keys(config).length === 0) return;
-
-      const getLatestResponseSource = config.getLatestResponse;
-      delete config.getLatestResponse;
-
-      if (typeof getLatestResponseSource === 'function') {
-        state.customGetResponse = getLatestResponseSource;
-      } else if (getLatestResponseSource && typeof getLatestResponseSource === 'string') {
-        const fn = compileSelectorFn(getLatestResponseSource);
-        if (fn) state.customGetResponse = fn;
-      }
-
-      for (const [key, value] of Object.entries(config)) {
-        if (typeof value === 'function') {
-          state.resolvers[key] = value;
-          continue;
-        }
-        if (!value || typeof value !== 'string') continue;
-        const fn = compileSelectorFn(value);
-        if (fn) {
-          state.resolvers[key] = fn;
-        } else {
-          state.cssSelectors[key] = value;
-        }
-      }
-    }
 
     function registerSiteBridge(site) {
       if (!site || typeof site !== 'object') return;
-      if (site.adapter && typeof site.adapter === 'object') {
-        state.siteAdapter = site.adapter;
+      state.site = site;
+      if (typeof site.readFileLineLimit === 'number' && site.readFileLineLimit > 0) {
+        state.readFileLineLimit = site.readFileLineLimit;
       }
-      if (site.selectors) {
-        applySelectorConfig(site.selectors);
-      }
-      if (typeof site.fileLineLimit === 'number' && site.fileLineLimit > 0) {
-        state.fileLineLimit = site.fileLineLimit;
+      if (typeof site.writeFileLineLimit === 'number' && site.writeFileLineLimit > 0) {
+        state.writeFileLineLimit = site.writeFileLineLimit;
       }
     }
 
-    function getSiteAdapter() {
-      return state.siteAdapter || {};
+    function getSite() {
+      return state.site || null;
     }
 
-    function callSite(method, fallback) {
-      const fn = getSiteAdapter()[method];
-      if (typeof fn === 'function') {
-        return fn.apply(getSiteAdapter(), Array.prototype.slice.call(arguments, 2));
-      }
-      return typeof fallback === 'function' ? fallback.apply(null, Array.prototype.slice.call(arguments, 2)) : fallback;
-    }
-
-    function splitSelectors(selectorText) {
-      return String(selectorText || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-    }
-
-    function resolveElement(key, fallbackCss) {
-      const fn = state.resolvers[key];
-      if (fn) {
+    function resolveCurrentDocument() {
+      const site = getSite();
+      if (site && typeof site.resolveCurrentDocument === 'function') {
         try {
-          const result = fn();
-          if (result instanceof HTMLElement) return result;
-          return null;
+          const doc = site.resolveCurrentDocument();
+          if (doc) return doc;
         } catch (err) {
-          console.warn('[bridge] selector runtime failed:', key, err);
-          return null;
+          console.warn('[bridge] resolveCurrentDocument failed', err);
         }
       }
+      return document;
+    }
 
-      const selectors = splitSelectors(state.cssSelectors[key] || fallbackCss || '');
-      for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el) return el;
+    function defaultPollSnapshot(doc) {
+      const scope = doc || document;
+      const nodes = scope.querySelectorAll(
+        '[class*="markdown"], [data-message-author-role="assistant"], [class*="assistant"]'
+      );
+      let lastAgent = null;
+      let responseRoot = null;
+      if (nodes.length) {
+        const last = nodes[nodes.length - 1];
+        const text = (last.innerText || last.textContent || '').trim();
+        if (text) {
+          lastAgent = { index: 0, text };
+          responseRoot = last;
+        }
       }
-      return null;
+      return {
+        loading: false,
+        lastUser: null,
+        lastAgent,
+        responseRoot,
+      };
+    }
+
+    function normalizeMessage(msg) {
+      if (!msg || typeof msg !== 'object') return null;
+      const text = String(msg.text || '').trim();
+      if (!text) return null;
+      const index = Number(msg.index);
+      return {
+        index: Number.isFinite(index) ? index : -1,
+        text,
+      };
+    }
+
+    function runPollSnapshot() {
+      const doc = resolveCurrentDocument();
+      const site = getSite();
+      let snap = null;
+      if (site && typeof site.pollSnapshot === 'function') {
+        try {
+          snap = site.pollSnapshot(doc);
+        } catch (err) {
+          console.warn('[bridge] pollSnapshot failed', err);
+          snap = null;
+        }
+      }
+      if (!snap || typeof snap !== 'object') {
+        snap = defaultPollSnapshot(doc);
+      }
+
+      if (snap.loading) {
+        return {
+          loading: true,
+          lastUser: null,
+          lastAgent: null,
+          responseRoot: null,
+        };
+      }
+
+      return {
+        loading: false,
+        lastUser: normalizeMessage(snap.lastUser),
+        lastAgent: normalizeMessage(snap.lastAgent),
+        responseRoot: snap.responseRoot || null,
+      };
+    }
+
+    function pollSnapshotForHost() {
+      const s = runPollSnapshot();
+      return {
+        loading: !!s.loading,
+        lastUser: s.lastUser
+          ? { index: Number(s.lastUser.index), text: String(s.lastUser.text || '') }
+          : null,
+        lastAgent: s.lastAgent
+          ? { index: Number(s.lastAgent.index), text: String(s.lastAgent.text || '') }
+          : null,
+      };
+    }
+
+    function defaultGetComposer(doc) {
+      const scope = doc || document;
+      return {
+        input: scope.querySelector('textarea'),
+        sendButton: scope.querySelector("button[type='submit']"),
+      };
+    }
+
+    function getComposer(doc) {
+      const scope = doc || resolveCurrentDocument();
+      const site = getSite();
+      if (site && typeof site.getComposer === 'function') {
+        try {
+          const result = site.getComposer(scope);
+          if (result && typeof result === 'object') {
+            return {
+              input: result.input || null,
+              sendButton: result.sendButton || null,
+            };
+          }
+        } catch (err) {
+          console.warn('[bridge] getComposer failed', err);
+        }
+      }
+      return defaultGetComposer(scope);
     }
 
     function queryInput() {
-      return resolveElement('input', 'textarea');
+      return getComposer(resolveCurrentDocument()).input;
+    }
+
+    function querySendButton() {
+      return getComposer(resolveCurrentDocument()).sendButton;
     }
 
     function unlockInputElement(el) {
@@ -183,8 +212,9 @@
     }
 
     function removeInputLimits() {
+      const doc = resolveCurrentDocument();
       const selectors = 'textarea, input[type="text"], input:not([type]), [contenteditable="true"]';
-      document.querySelectorAll(selectors).forEach(unlockInputElement);
+      doc.querySelectorAll(selectors).forEach(unlockInputElement);
       const input = queryInput();
       if (input) unlockInputElement(input);
     }
@@ -192,63 +222,23 @@
     function installInputLimitRemover() {
       if (state.inputLimitObserver) return;
       removeInputLimits();
+      const doc = resolveCurrentDocument();
       state.inputLimitObserver = new MutationObserver(() => {
         scheduleRemoveInputLimits();
       });
-      if (document.body) {
-        state.inputLimitObserver.observe(document.body, {
+      if (doc.body) {
+        state.inputLimitObserver.observe(doc.body, {
           childList: true,
           subtree: true,
           attributes: true,
           attributeFilter: ['maxlength', 'maxLength', 'data-maxlength', 'data-max-length'],
         });
       }
-      document.addEventListener('focusin', removeInputLimits, true);
-    }
-
-    function querySendButton() {
-      return resolveElement('sendButton', "button[type='submit']");
+      doc.addEventListener('focusin', removeInputLimits, true);
     }
 
     function isLoading() {
-      const fn = state.resolvers.loadingIndicator;
-      if (fn) {
-        try {
-          const result = fn();
-          if (typeof result === 'boolean') return result;
-          if (result instanceof HTMLElement) return result.offsetParent !== null;
-        } catch (err) {
-          console.warn('[bridge] loadingIndicator failed', err);
-        }
-        return false;
-      }
-
-      const selectors = splitSelectors(state.cssSelectors.loadingIndicator || '');
-      for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el && el.offsetParent !== null) return true;
-      }
-      return false;
-    }
-
-    function queryResponseContainer() {
-      const direct = resolveElement('responseContainer');
-      if (direct) {
-        const text = (direct.innerText || direct.textContent || '').trim();
-        if (text) return direct;
-      }
-
-      const selectors = splitSelectors(
-        state.cssSelectors.responseContainer || DEFAULT_RESPONSE_SELECTORS
-      );
-      for (const sel of selectors) {
-        const nodes = document.querySelectorAll(sel);
-        if (nodes.length === 0) continue;
-        const last = nodes[nodes.length - 1];
-        const text = (last.innerText || last.textContent || '').trim();
-        if (text) return last;
-      }
-      return null;
+      return !!runPollSnapshot().loading;
     }
 
     function sleep(ms) {
@@ -445,6 +435,10 @@
         btn.click();
         return true;
       }
+      return clickSendFallback();
+    }
+
+    function clickSendFallback() {
       const input = queryInput();
       if (!input) return false;
       const form = input.closest('form');
@@ -458,92 +452,76 @@
       return true;
     }
 
-    function defaultResolveToolBlockRoot(block) {
-      if (!block) return block;
-      let node = block;
-      for (let depth = 0; depth < 5 && node; depth++) {
-        const hasCopy = node.querySelector(
-          '[class*="copy"], [aria-label*="复制"], [aria-label*="copy"], [title*="复制"], [title*="copy"]'
-        );
-        if (hasCopy) return node;
-        node = node.parentElement;
+    async function clickSendWithRetry() {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const btn = querySendButton();
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        if (attempt < 9) await sleep(1000);
       }
-      return block;
+      return clickSendFallback();
     }
 
     function defaultFindCallToolBlocks(root) {
-      const scope = root || document;
+      const scope = root || resolveCurrentDocument();
       const blocks = [];
       const seen = new Set();
-      const nodes = scope.querySelectorAll('pre, [class*="code-block"], [class*="codeBlock"]');
+      const nodes = scope.querySelectorAll('pre, code, [class*="code-block"], [class*="codeBlock"]');
       for (let i = 0; i < nodes.length; i++) {
         const block = nodes[i];
         if (seen.has(block)) continue;
         seen.add(block);
-        const codeEl = block.querySelector('code, pre') || block;
-        const codeText = (codeEl.textContent || '').trim();
+        const codeText = (block.textContent || '').trim();
         if (codeText.includes('BEGIN_TOOL')) {
-          blocks.push(callSite('resolveToolBlockRoot', defaultResolveToolBlockRoot, block));
+          blocks.push(block);
         }
       }
       return blocks;
     }
 
-    function defaultFindCopyButtonInBlock(block) {
-      const root = callSite('resolveToolBlockRoot', defaultResolveToolBlockRoot, block);
-      const scopes = root === block ? [block] : [root, block];
-      for (let s = 0; s < scopes.length; s++) {
-        const scope = scopes[s];
-        const candidates = scope.querySelectorAll(
-          '[role="button"], button, a, span, div, [class*="copy"], [aria-label*="复制"], [aria-label*="copy"], [title*="复制"], [title*="copy"]'
-        );
-        for (let i = 0; i < candidates.length; i++) {
-          const el = candidates[i];
-          const rect = el.getBoundingClientRect();
-          if (rect.width <= 0 && rect.height <= 0 && el.offsetParent === null) continue;
-          const label = (
-            (el.getAttribute('aria-label') || '') +
-            (el.getAttribute('title') || '') +
-            (el.textContent || '') +
-            (el.className || '')
-          ).trim();
-          if (/^(复制|copy)$/i.test(label) || /\b(复制|copy)\b/i.test(label) || /copy/i.test(String(el.className || ''))) {
-            return el;
-          }
+    function findCallToolBlocks(root) {
+      const site = getSite();
+      if (site && typeof site.findCallToolBlocks === 'function') {
+        try {
+          const result = site.findCallToolBlocks(root);
+          return Array.isArray(result) ? result : [];
+        } catch (err) {
+          console.warn('[bridge] findCallToolBlocks failed', err);
+          return [];
         }
       }
-      return null;
+      return defaultFindCallToolBlocks(root);
     }
 
-    function defaultFindToolCodeText(root) {
-      if (!root) return '';
-      const codes = root.querySelectorAll('pre code, code');
-      for (let i = codes.length - 1; i >= 0; i--) {
-        const text = (codes[i].textContent || '').trim();
-        if (text.includes('BEGIN_TOOL')) return text;
+    function hasFindCopyButtons() {
+      const site = getSite();
+      return !!(site && typeof site.findCopyButtons === 'function');
+    }
+
+    function findCopyButtons(root) {
+      const site = getSite();
+      if (!site || typeof site.findCopyButtons !== 'function') return [];
+      try {
+        const result = site.findCopyButtons(root);
+        return Array.isArray(result) ? result : [];
+      } catch (err) {
+        console.warn('[bridge] findCopyButtons failed', err);
+        return [];
       }
-      return '';
-    }
-
-    function resolveToolBlockRoot(block) {
-      return callSite('resolveToolBlockRoot', defaultResolveToolBlockRoot, block);
-    }
-
-    function findCallToolBlocks(root) {
-      return callSite('findCallToolBlocks', defaultFindCallToolBlocks, root);
-    }
-
-    function findCopyButtonInBlock(block) {
-      return callSite('findCopyButtonInBlock', defaultFindCopyButtonInBlock, block);
     }
 
     function findToolCodeText(root) {
-      return callSite('findToolCodeText', defaultFindToolCodeText, root);
-    }
-
-    function getCallToolBlockKey(block) {
-      const codeEl = block.querySelector('code, pre');
-      return (codeEl ? codeEl.textContent : block.textContent || '').trim().slice(0, 240);
+      const blocks = findCallToolBlocks(root);
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const block = blocks[i];
+        const codeEl =
+          block && block.querySelector ? block.querySelector('code, pre') || block : block;
+        const text = ((codeEl && codeEl.textContent) || (block && block.textContent) || '').trim();
+        if (text.includes('BEGIN_TOOL')) return text;
+      }
+      return '';
     }
 
     function getCallToolBlockRef(block) {
@@ -592,17 +570,24 @@
       return true;
     }
 
-    /** 站点 adapter.captureConversation 可选；无则空，由 Rust 轮询 bridge 回复 */
     function captureConversation() {
-      if (state.siteAdapter && typeof state.siteAdapter.captureConversation === 'function') {
-        try {
-          const list = state.siteAdapter.captureConversation();
-          return Array.isArray(list) ? list : [];
-        } catch (_) {
-          return [];
-        }
+      const s = runPollSnapshot();
+      const list = [];
+      if (s.lastUser) {
+        list.push({
+          key: s.lastUser.index,
+          role: 'user',
+          text: s.lastUser.text,
+        });
       }
-      return [];
+      if (s.lastAgent) {
+        list.push({
+          key: s.lastAgent.index,
+          role: 'agent',
+          text: s.lastAgent.text,
+        });
+      }
+      return list;
     }
 
     function logToolCaptureOnce(captureKey, source, text, extra) {
@@ -651,51 +636,48 @@
       });
     }
 
-    function findCallToolBlocksWithFallback(root) {
-      const scope = root || document;
-      let blocks = findCallToolBlocks(scope);
-      if (!blocks.length && scope !== document) {
-        blocks = findCallToolBlocks(document);
+    async function readToolTextViaCopyButtons(buttons) {
+      if (!buttons || !buttons.length) return '';
+      const last = buttons[buttons.length - 1];
+      const ordered = [last];
+      for (let i = 0; i < buttons.length; i++) {
+        if (buttons[i] !== last) ordered.push(buttons[i]);
       }
-      return blocks;
-    }
 
-    async function readLatestToolTextViaCopy(root) {
-      const blocks = findCallToolBlocksWithFallback(root);
-      if (!blocks.length) return '';
-      const block = blocks[blocks.length - 1];
-      const btn = findCopyButtonInBlock(block);
-      if (!btn) return '';
-      const blockKey = getCallToolBlockKey(block);
-      const btnLabel = getCopyButtonLabel(btn);
-      const text = await captureClipboardAfterCopy(btn);
-      const ok = text.includes('BEGIN_TOOL');
-      if (ok) {
-        logToolCaptureOnce(blockKey, 'copy', text, `button: ${btnLabel}`);
-      } else if (text) {
-        const failKey = blockKey + ':copy-fail:' + text.length;
-        if (state.lastCopyLogKey !== failKey) {
-          state.lastCopyLogKey = failKey;
-          postBridgeCommLog(
-            'copy',
-            `status: failed\nsource: copy\nbutton: ${btnLabel}\nlength: ${text.length}\npreview: ${text.slice(0, 200)}`
-          );
+      for (let i = 0; i < ordered.length; i++) {
+        const btn = ordered[i];
+        const btnLabel = getCopyButtonLabel(btn);
+        const text = await captureClipboardAfterCopy(btn);
+        const ok = text.includes('BEGIN_TOOL');
+        if (ok) {
+          logToolCaptureOnce('btn:' + i, 'copy', text, `button: ${btnLabel}`);
+          return text;
         }
-      } else {
-        const failKey = blockKey + ':copy-fail:0';
-        if (state.lastCopyLogKey !== failKey) {
-          state.lastCopyLogKey = failKey;
-          postBridgeCommLog(
-            'copy',
-            `status: failed\nsource: copy\nbutton: ${btnLabel}\nlength: 0`
-          );
+        if (text) {
+          const failKey = 'copy-fail:' + i + ':' + text.length;
+          if (state.lastCopyLogKey !== failKey) {
+            state.lastCopyLogKey = failKey;
+            postBridgeCommLog(
+              'copy',
+              `status: failed\nsource: copy\nbutton: ${btnLabel}\nlength: ${text.length}\npreview: ${text.slice(0, 200)}`
+            );
+          }
+        } else {
+          const failKey = 'copy-fail:' + i + ':0';
+          if (state.lastCopyLogKey !== failKey) {
+            state.lastCopyLogKey = failKey;
+            postBridgeCommLog(
+              'copy',
+              `status: failed\nsource: copy\nbutton: ${btnLabel}\nlength: 0`
+            );
+          }
         }
       }
-      return ok ? text : '';
+      return '';
     }
 
     function getCopiedToolTextIfFresh() {
-      if (!state.readToolViaCopy || !state.copiedToolText) return '';
+      if (!state.copiedToolText) return '';
       if (!state.copiedToolText.includes('BEGIN_TOOL')) return '';
       if (Date.now() - state.copiedToolAt > 60000) return '';
       return state.copiedToolText;
@@ -715,35 +697,39 @@
     }
 
     function scheduleToolCopyRead() {
-      if (!state.readToolViaCopy || state.copyReadInFlight) return;
+      if (state.copyReadInFlight) return;
       if (getCopiedToolTextIfFresh()) return;
 
-      const container = queryResponseContainer();
-      const domTool = findToolCodeText(container || document);
+      const snap = runPollSnapshot();
+      if (snap.loading) return;
+      const root = snap.responseRoot || resolveCurrentDocument();
+
+      // DOM 路径：有 findCallToolBlocks 即可，不依赖复制按钮
+      const domTool = findToolCodeText(root);
       if (domTool.includes('BEGIN_TOOL')) {
         pinToolTextIfValid(domTool);
         logToolCaptureOnce('dom:' + domTool.length, 'dom', domTool, '');
         return;
       }
 
-      const blocks = findCallToolBlocksWithFallback(container);
-      if (!blocks.length) return;
-      const block = blocks[blocks.length - 1];
-      const blockRef = getCallToolBlockRef(block) || '';
+      if (!hasFindCopyButtons()) return;
+
+      const buttons = findCopyButtons(root);
+      if (!buttons.length) return;
+
+      const blockRef =
+        (buttons[buttons.length - 1] && getCallToolBlockRef(buttons[buttons.length - 1])) ||
+        'copy-btns:' + buttons.length;
       if (blockRef && blockRef === state.copyReadBlockRef) return;
       const failCount = state.copyReadFailCounts[blockRef] || 0;
       if (failCount >= 5) return;
 
-      const btn = findCopyButtonInBlock(block);
-      if (!btn) return;
-
       state.copyReadInFlight = true;
-      readLatestToolTextViaCopy(container)
+      readToolTextViaCopyButtons(buttons)
         .then((text) => {
           if (text && text.includes('BEGIN_TOOL')) {
             state.copiedToolText = text;
             state.copiedToolAt = Date.now();
-            state.copyReadBlockKey = getCallToolBlockKey(block);
             pinToolTextIfValid(text);
             if (blockRef) {
               state.copyReadBlockRef = blockRef;
@@ -758,98 +744,67 @@
         });
     }
 
-    function pickToolText(container) {
-      const copied = getCopiedToolTextIfFresh();
-      if (copied) {
-        pinToolTextIfValid(copied);
-        return copied;
-      }
-      const dom = findToolCodeText(container || document);
-      if (dom.includes('BEGIN_TOOL')) {
-        pinToolTextIfValid(dom);
-        return dom;
-      }
-      return getPinnedToolTextIfFresh();
-    }
-
     function getCopyToolDebug() {
-      const container = queryResponseContainer();
-      const blocks = findCallToolBlocksWithFallback(container);
-      const block = blocks.length ? blocks[blocks.length - 1] : null;
-      const btn = block ? findCopyButtonInBlock(block) : null;
+      const snap = runPollSnapshot();
+      const root = snap.responseRoot || resolveCurrentDocument();
+      const blocks = findCallToolBlocks(root);
+      const buttons = hasFindCopyButtons() ? findCopyButtons(root) : [];
+      const btn = buttons.length ? buttons[buttons.length - 1] : null;
       const copied = getCopiedToolTextIfFresh();
-      const base = {
-        readToolViaCopy: state.readToolViaCopy,
+      return {
+        copyPathEnabled: hasFindCopyButtons(),
         blockCount: blocks.length,
+        copyButtonCount: buttons.length,
         hasCopyBtn: !!btn,
         copyBtnLabel: btn
-          ? ((btn.getAttribute('aria-label') || '') + (btn.getAttribute('title') || '') + (btn.textContent || '')).trim().slice(0, 60)
+          ? (
+              (btn.getAttribute('aria-label') || '') +
+              (btn.getAttribute('title') || '') +
+              (btn.textContent || '')
+            )
+              .trim()
+              .slice(0, 60)
           : '',
         copiedToolLen: copied ? copied.length : state.copiedToolText ? state.copiedToolText.length : 0,
         copiedToolPreview: copied ? copied.slice(0, 120) : '',
         viaCopy: !!copied,
         pinnedToolLen: getPinnedToolTextIfFresh().length,
-      };
-      const extra = callSite('getCopyDebugExtra', null, block, btn);
-      return extra && typeof extra === 'object' ? { ...base, ...extra } : base;
-    }
-
-    function withLoading(meta) {
-      const base = meta && typeof meta === 'object' ? meta : { key: -1, text: '' };
-      return {
-        key: Number.isFinite(base.key) ? base.key : -1,
-        text: String(base.text || ''),
-        loading: isLoading(),
+        loading: !!snap.loading,
       };
     }
 
     function getLatestResponseMeta() {
+      const s = runPollSnapshot();
+      const key = s.lastAgent ? Number(s.lastAgent.index) : -1;
+      let text = s.lastAgent ? String(s.lastAgent.text || '') : '';
+
+      // Prefer clipboard/pin when copy path captured BEGIN_TOOL
       const copied = getCopiedToolTextIfFresh();
-      if (copied) return withLoading({ key: -1, text: copied });
-
-      const siteMeta = callSite('getLatestResponseMeta', null);
-      if (siteMeta && typeof siteMeta === 'object' && siteMeta.text) {
-        if (siteMeta.text.includes('BEGIN_TOOL')) {
-          pinToolTextIfValid(siteMeta.text);
-          return withLoading(siteMeta);
-        }
-        const toolText = pickToolText(queryResponseContainer());
-        if (toolText) return withLoading({ key: -1, text: toolText });
+      if (copied) {
+        text = copied;
+      } else {
         const pinned = getPinnedToolTextIfFresh();
-        if (pinned) return withLoading({ key: -1, text: pinned });
-        return withLoading(siteMeta);
-      }
-
-      if (typeof state.customGetResponse === 'function') {
-        const result = state.customGetResponse();
-        if (typeof result === 'string') {
-          const text = result.trim();
-          if (text.includes('BEGIN_TOOL')) return withLoading({ key: -1, text });
-        }
-        if (result && typeof result === 'object') {
-          const text = String(result.text || '').trim();
-          const key = Number.isFinite(result.key) ? result.key : -1;
-          if (text.includes('BEGIN_TOOL')) return withLoading({ key, text });
-          const toolText = pickToolText(queryResponseContainer());
-          if (toolText) return withLoading({ key: -1, text: toolText });
-          if (text) return withLoading({ key, text });
+        if (pinned && (!text || !text.includes('BEGIN_TOOL'))) {
+          text = pinned;
         }
       }
 
-      const container = queryResponseContainer();
-      if (!container) return withLoading({ key: -1, text: '' });
-      const toolText = pickToolText(container);
-      if (toolText) return withLoading({ key: -1, text: toolText });
-      const pinned = getPinnedToolTextIfFresh();
-      if (pinned) return withLoading({ key: -1, text: pinned });
-      return withLoading({
-        key: -1,
-        text: (container.innerText || container.textContent || '').trim(),
-      });
+      return {
+        key: Number.isFinite(key) ? key : -1,
+        text,
+        loading: !!s.loading,
+      };
     }
 
     function getLatestResponse() {
       return getLatestResponseMeta().text;
+    }
+
+    function getFileLineLimit() {
+      return {
+        read: state.readFileLineLimit || 0,
+        write: state.writeFileLineLimit || 0,
+      };
     }
 
     function postChatMessage(agentId, role, text, key) {
@@ -870,7 +825,8 @@
     function installSendCapture() {
       if (state.sendCaptureInstalled) return;
       state.sendCaptureInstalled = true;
-      document.addEventListener(
+      const doc = resolveCurrentDocument();
+      doc.addEventListener(
         'click',
         (event) => {
           const btn = querySendButton();
@@ -888,7 +844,7 @@
     }
 
     function postToEditor(_data) {
-      // 远端页不 invoke；由 Rust 轮询 getLatestResponseMeta 定稿
+      // Host polls getLatestResponseMeta / pollSnapshotForHost
     }
 
     function hasNewResponseText(baseline, text) {
@@ -908,11 +864,12 @@
 
       if (state.watchTimer) clearInterval(state.watchTimer);
 
-      const interval = intervalMs || state.pollIntervalMs || 500;
+      const interval = intervalMs || state.pollIntervalMs || 1000;
       const requiredStableMs = stableMs || state.stableMs || 2000;
 
       state.watchTimer = setInterval(() => {
-        if (isLoading()) {
+        const snap = runPollSnapshot();
+        if (snap.loading) {
           state.stableSince = 0;
           return;
         }
@@ -921,13 +878,12 @@
 
         const meta = getLatestResponseMeta();
         const text = meta.text;
+        const key = Number.isFinite(meta.key) ? meta.key : -1;
         if (!text) return;
 
         if (!state.seenChange) {
           const hasNewKey =
-            state.responseBaselineKey >= 0 &&
-            meta.key >= 0 &&
-            meta.key > state.responseBaselineKey;
+            state.responseBaselineKey >= 0 && key >= 0 && key > state.responseBaselineKey;
           if (hasNewKey) {
             state.seenChange = true;
             state.lastResponse = text;
@@ -965,7 +921,6 @@
     async function runSend(msg) {
       state.copiedToolText = '';
       state.copiedToolAt = 0;
-      state.copyReadBlockKey = '';
       state.copyReadBlockRef = '';
       state.copyReadFailCounts = {};
       state.pinnedToolText = '';
@@ -981,7 +936,6 @@
       state.responseBaselineKey = baselineMeta.key;
       if (msg.text && msg.agentId) {
         postChatMessage(msg.agentId, 'user', msg.text, Date.now());
-        // 基线由 Rust send_agent_message 侧 reset；页面点击发送走 pendingResetBaseline
       }
       if (msg.text) {
         for (let attempt = 0; attempt < 12; attempt++) {
@@ -992,8 +946,8 @@
           await sleep(250);
         }
       }
-      clickSend();
-      // 发送后清空，避免工具结果残留在输入框
+      await sleep(300);
+      await clickSendWithRetry();
       fillInput('');
       watchResponse(
         (text) => postToEditor({ type: 'response', text, agentId: msg.agentId }),
@@ -1013,24 +967,21 @@
         runSend(msg);
       } else if (msg.type === 'config') {
         if (msg.agentId) state.agentId = msg.agentId;
-        if (msg.selectors) applySelectorConfig(msg.selectors);
         if (msg.pollIntervalMs) state.pollIntervalMs = msg.pollIntervalMs;
         if (msg.stableMs) state.stableMs = msg.stableMs;
-        if (msg.stableCount) state.stableMs = (msg.stableCount || 3) * (msg.pollIntervalMs || 500);
+        if (msg.stableCount) state.stableMs = (msg.stableCount || 3) * (msg.pollIntervalMs || 1000);
         if (msg.inputMode === 'type' || msg.inputMode === 'fill') {
           state.inputMode = msg.inputMode;
         }
         if (Number.isFinite(msg.typeDelayMs) && msg.typeDelayMs >= 0) {
           state.typeDelayMs = msg.typeDelayMs;
         }
-        if (msg.typeStrategy === 'keyboard' || msg.typeStrategy === 'exec' || msg.typeStrategy === 'paste') {
+        if (
+          msg.typeStrategy === 'keyboard' ||
+          msg.typeStrategy === 'exec' ||
+          msg.typeStrategy === 'paste'
+        ) {
           state.typeStrategy = msg.typeStrategy;
-        }
-        if (typeof msg.readToolViaCopy === 'boolean') {
-          state.readToolViaCopy = msg.readToolViaCopy;
-        }
-        if (typeof msg.getLatestResponse === 'function') {
-          state.customGetResponse = msg.getLatestResponse;
         }
         installSendCapture();
         installInputLimitRemover();
@@ -1049,6 +1000,8 @@
       onEditorMessage,
       getLatestResponse,
       getLatestResponseMeta,
+      pollSnapshot: pollSnapshotForHost,
+      pollSnapshotForHost,
       isLoading,
       getCopyToolDebug,
       scheduleToolCopyRead,
@@ -1057,6 +1010,9 @@
       takePendingResetBaseline,
       captureConversation,
       removeInputLimits,
+      getFileLineLimit,
+      getComposer,
+      resolveCurrentDocument,
       get responseBaseline() {
         return state.responseBaseline;
       },
