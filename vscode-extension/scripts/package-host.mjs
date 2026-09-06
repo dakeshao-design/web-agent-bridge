@@ -12,16 +12,14 @@ const releaseDir = path.join(root, 'packages/editor-app/src-tauri/target/release
 const debugDir = path.join(root, 'packages/editor-app/src-tauri/target/debug');
 const srcCandidates = [
   path.join(releaseDir, 'WABEditor.exe'),
-  path.join(releaseDir, 'editor-app.exe'),
   path.join(debugDir, 'WABEditor.exe'),
-  path.join(debugDir, 'editor-app.exe'),
 ];
 const destDir = path.join(root, 'vscode-extension/bin');
 const dest = path.join(destDir, 'agent-host.exe');
 
 const src = srcCandidates.find((p) => fs.existsSync(p));
 if (!src) {
-  console.error('[package-host] 未找到 WABEditor.exe / editor-app.exe，请先 tauri build');
+  console.error('[package-host] 未找到 WABEditor.exe，请先 tauri build');
   process.exit(1);
 }
 fs.mkdirSync(destDir, { recursive: true });

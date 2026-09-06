@@ -184,6 +184,45 @@ function toFileOperation(call: ParsedToolCall): FileOperation | null {
   return parseToolCall(call.toolName, call.args);
 }
 
+/** 抽出 call-tool 源码块，供调试展示 */
+export function extractCallToolSourceBlocks(text: string): string[] {
+  const normalized = stripMarkdownLineNumbers(text);
+  const blocks: string[] = [];
+  const seen = new Set<string>();
+
+  let match: RegExpExecArray | null;
+  const fenced = new RegExp(CALL_TOOL_FENCED.source, 'gi');
+  while ((match = fenced.exec(normalized)) !== null) {
+    const src = match[0];
+    if (seen.has(src)) continue;
+    seen.add(src);
+    blocks.push(src);
+  }
+
+  const raw = new RegExp(CALL_TOOL_RAW.source, 'gi');
+  while ((match = raw.exec(normalized)) !== null) {
+    const src = match[0];
+    if (seen.has(src)) continue;
+    // 围栏内已含同一 RAW 时跳过
+    if (blocks.some((b) => b.includes(src))) continue;
+    seen.add(src);
+    blocks.push(src);
+  }
+
+  return blocks;
+}
+
+/** 从新到旧的 agent 文本中取最近一条含 call-tool 的 */
+export function findLatestCallToolSource(
+  agentTextsNewestFirst: Iterable<string>
+): { text: string; blocks: string[] } | null {
+  for (const text of agentTextsNewestFirst) {
+    const blocks = extractCallToolSourceBlocks(text);
+    if (blocks.length > 0) return { text, blocks };
+  }
+  return null;
+}
+
 export function parseCallToolBlocks(response: string): FileOperation[] {
   const normalized = stripMarkdownLineNumbers(response);
   const ops: FileOperation[] = [];

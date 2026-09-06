@@ -49,6 +49,9 @@ fn make_id() -> String {
     format!("{ms}-{:x}", h.finish())
 }
 
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn start_powershell_inner(
     command: String,
     cwd: Option<String>,
@@ -59,6 +62,12 @@ fn start_powershell_inner(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // 不弹出控制台窗口
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     if let Some(dir) = cwd.filter(|s| !s.trim().is_empty()) {
         cmd.current_dir(dir);
     }
@@ -180,12 +189,18 @@ fn kill_session_by_id(id: &str, state: &PowershellState, mark_killed: bool) -> R
     }
     let pid = s.pid;
     drop(sessions);
-    let _ = Command::new("taskkill")
+    let mut kill = Command::new("taskkill");
+    kill
         .args(["/pid", &pid.to_string(), "/T", "/F"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        kill.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = kill.status();
     Ok(())
 }
 

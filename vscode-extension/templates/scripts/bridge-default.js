@@ -24,6 +24,7 @@
       responseBaselineKey: -1,
       inputMode: 'fill',
       typeDelayMs: 0,
+      waitBeforeSend: 300,
       typeStrategy: 'keyboard',
       agentId: '',
       sendCaptureInstalled: false,
@@ -43,6 +44,12 @@
       pendingCommLogs: [],
       pendingChatMessages: [],
       pendingResetBaseline: false,
+      // null | 'running' | { ok, error? }
+      newChatStatus: null,
+      newChatOnload: false,
+      newChatOnloadStarted: false,
+      newChatOnloadTimer: null,
+      pendingNewChatOnloadAgentMode: false,
     };
 
     function registerSiteBridge(site) {
@@ -54,6 +61,10 @@
       if (typeof site.writeFileLineLimit === 'number' && site.writeFileLineLimit > 0) {
         state.writeFileLineLimit = site.writeFileLineLimit;
       }
+      if (typeof site.newChatOnload === 'boolean') {
+        state.newChatOnload = site.newChatOnload;
+      }
+      maybeStartNewChatOnload();
     }
 
     function getSite() {
@@ -452,16 +463,44 @@
       return true;
     }
 
+    function snapshotTurnKeys(snap) {
+      const s = snap && typeof snap === 'object' ? snap : {};
+      const userKey =
+        s.lastUser && Number.isFinite(Number(s.lastUser.index)) ? Number(s.lastUser.index) : null;
+      const agentKey =
+        s.lastAgent && Number.isFinite(Number(s.lastAgent.index))
+          ? Number(s.lastAgent.index)
+          : null;
+      return {
+        loading: !!s.loading,
+        userKey,
+        agentKey,
+      };
+    }
+
+    /** 点击发送后等待 waitBeforeSend（未配置按 300ms），检查 loading/会话 key，未变化则重试，最多 10 次 */
     async function clickSendWithRetry() {
+      const configured = Number(state.waitBeforeSend);
+      const waitMs = Number.isFinite(configured) && configured > 0 ? configured : 300;
+      const before = snapshotTurnKeys(runPollSnapshot());
+
       for (let attempt = 0; attempt < 10; attempt++) {
         const btn = querySendButton();
         if (btn) {
           btn.click();
+        } else {
+          clickSendFallback();
+        }
+
+        await sleep(waitMs);
+        const after = snapshotTurnKeys(runPollSnapshot());
+        if (after.loading) return true;
+        if (after.userKey !== before.userKey || after.agentKey !== before.agentKey) {
           return true;
         }
-        if (attempt < 9) await sleep(1000);
       }
-      return clickSendFallback();
+
+      return false;
     }
 
     function defaultFindCallToolBlocks(root) {
@@ -822,6 +861,116 @@
       state.pendingResetBaseline = true;
     }
 
+    /** getComposer.input 就绪后可选执行 newChatSession，再通知 Host 注入 Agent 模式 */
+    function markNewChatOnloadAgentMode() {
+      state.pendingNewChatOnloadAgentMode = true;
+    }
+
+    function takePendingNewChatOnloadAgentMode() {
+      if (!state.pendingNewChatOnloadAgentMode) return false;
+      state.pendingNewChatOnloadAgentMode = false;
+      return true;
+    }
+
+    function getNewChatOnloadDebug() {
+      return {
+        newChatOnload: !!state.newChatOnload,
+        newChatOnloadStarted: !!state.newChatOnloadStarted,
+        pendingNewChatOnloadAgentMode: !!state.pendingNewChatOnloadAgentMode,
+        hasNewChatSession: !!(getSite() && typeof getSite().newChatSession === 'function'),
+      };
+    }
+
+    function finishNewChatOnload() {
+      const site = getSite();
+      function afterSession() {
+        // 与新会话按钮相同，稍等片刻再通知 Host
+        setTimeout(function () {
+          markNewChatOnloadAgentMode();
+        }, 500);
+      }
+      if (site && typeof site.newChatSession === 'function') {
+        Promise.resolve()
+          .then(function () {
+            return site.newChatSession(resolveCurrentDocument());
+          })
+          .then(afterSession)
+          .catch(function (err) {
+            console.warn('[bridge] newChatOnload newChatSession failed', err);
+          });
+        return;
+      }
+      afterSession();
+    }
+
+    function maybeStartNewChatOnload() {
+      if (!state.newChatOnload || state.newChatOnloadStarted) return;
+      state.newChatOnloadStarted = true;
+      const pollMs = 500;
+      const maxWaitMs = 120000;
+      const startedAt = Date.now();
+
+      function tick() {
+        state.newChatOnloadTimer = null;
+        try {
+          const composer = getComposer(resolveCurrentDocument());
+          if (composer && composer.input != null) {
+            finishNewChatOnload();
+            return;
+          }
+        } catch (err) {
+          console.warn('[bridge] newChatOnload poll failed', err);
+        }
+        if (Date.now() - startedAt >= maxWaitMs) {
+          console.warn('[bridge] newChatOnload timeout waiting for composer input');
+          return;
+        }
+        state.newChatOnloadTimer = setTimeout(tick, pollMs);
+      }
+      tick();
+    }
+
+    /** 启动站点 newChatSession；完成后 pollNewChatSessionStatus 取结果 */
+    function startNewChatSession() {
+      if (state.newChatStatus === 'running') {
+        return { ok: false, error: 'newChatSession already running' };
+      }
+      const site = getSite();
+      if (!site || typeof site.newChatSession !== 'function') {
+        return { ok: false, error: 'newChatSession not implemented' };
+      }
+      state.newChatStatus = 'running';
+      Promise.resolve()
+        .then(function () {
+          return site.newChatSession(resolveCurrentDocument());
+        })
+        .then(function () {
+          state.newChatStatus = { ok: true };
+          if (state.agentId) resetBridgeTracking(state.agentId);
+        })
+        .catch(function (err) {
+          state.newChatStatus = {
+            ok: false,
+            error: String((err && err.message) || err || 'newChatSession failed'),
+          };
+        });
+      return { ok: true };
+    }
+
+    function pollNewChatSessionStatus() {
+      const s = state.newChatStatus;
+      if (s === 'running') return { status: 'running' };
+      if (s && typeof s === 'object') {
+        state.newChatStatus = null;
+        return {
+          status: 'done',
+          ok: !!s.ok,
+          error: s.error ? String(s.error) : '',
+        };
+      }
+      return { status: 'idle' };
+    }
+
     function installSendCapture() {
       if (state.sendCaptureInstalled) return;
       state.sendCaptureInstalled = true;
@@ -938,17 +1087,24 @@
         postChatMessage(msg.agentId, 'user', msg.text, Date.now());
       }
       if (msg.text) {
+        const expected = String(msg.text).trim().length;
         for (let attempt = 0; attempt < 12; attempt++) {
           await applyInputText(msg.text);
           const input = queryInput();
           const current = input ? readInputText(input).trim() : '';
-          if (current && current.length >= Math.min(msg.text.length, 8)) break;
+          const need = expected <= 8 ? expected : Math.floor(expected * 0.9);
+          if (current && current.length >= need) break;
           await sleep(250);
         }
       }
-      await sleep(300);
       await clickSendWithRetry();
-      fillInput('');
+      // 等站点自行取稿并清空；立刻 fillInput('') 会打断富文本异步序列化
+      for (let i = 0; i < 25; i++) {
+        await sleep(120);
+        const input = queryInput();
+        const current = input ? readInputText(input).trim() : '';
+        if (!current) break;
+      }
       watchResponse(
         (text) => postToEditor({ type: 'response', text, agentId: msg.agentId }),
         msg.pollIntervalMs || state.pollIntervalMs,
@@ -965,6 +1121,10 @@
         });
       } else if (msg.type === 'send') {
         runSend(msg);
+      } else if (msg.type === 'clickSend') {
+        Promise.resolve(clickSendWithRetry());
+      } else if (msg.type === 'newChatSession') {
+        startNewChatSession();
       } else if (msg.type === 'config') {
         if (msg.agentId) state.agentId = msg.agentId;
         if (msg.pollIntervalMs) state.pollIntervalMs = msg.pollIntervalMs;
@@ -976,6 +1136,18 @@
         if (Number.isFinite(msg.typeDelayMs) && msg.typeDelayMs >= 0) {
           state.typeDelayMs = msg.typeDelayMs;
         }
+        if (Number.isFinite(msg.waitBeforeSend) && msg.waitBeforeSend >= 0) {
+          state.waitBeforeSend = msg.waitBeforeSend;
+        }
+        if (typeof msg.newChatOnload === 'boolean') {
+          state.newChatOnload = msg.newChatOnload;
+        }
+        if (Number.isFinite(msg.readFileLineLimit) && msg.readFileLineLimit > 0) {
+          state.readFileLineLimit = msg.readFileLineLimit;
+        }
+        if (Number.isFinite(msg.writeFileLineLimit) && msg.writeFileLineLimit > 0) {
+          state.writeFileLineLimit = msg.writeFileLineLimit;
+        }
         if (
           msg.typeStrategy === 'keyboard' ||
           msg.typeStrategy === 'exec' ||
@@ -985,6 +1157,7 @@
         }
         installSendCapture();
         installInputLimitRemover();
+        maybeStartNewChatOnload();
       }
     }
 
@@ -995,6 +1168,7 @@
       appendInputText,
       typeInput,
       clickSend,
+      clickSendWithRetry,
       watchResponse,
       postToEditor,
       onEditorMessage,
@@ -1008,6 +1182,11 @@
       drainPendingCommLogs,
       drainPendingChatMessages,
       takePendingResetBaseline,
+      startNewChatSession,
+      pollNewChatSessionStatus,
+      markNewChatOnloadAgentMode,
+      takePendingNewChatOnloadAgentMode,
+      getNewChatOnloadDebug,
       captureConversation,
       removeInputLimits,
       getFileLineLimit,

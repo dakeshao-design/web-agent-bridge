@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, startTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, startTransition, type MouseEvent } from 'react';
 import {
   ConfigLoader,
   FileOperationParser,
@@ -23,6 +23,9 @@ import {
   mergeToolPermissions,
   buildSelectionMessage,
   parseFileLineLimitsFromBridgeScript,
+  parseSiteAgentPromptFromBridgeScript,
+  extractCallToolSourceBlocks,
+  findLatestCallToolSource,
   POWERSHELL_PROGRESS_INTERVAL_MS,
   parsePowershellWaitDecision,
   type AgentConfig,
@@ -39,8 +42,14 @@ import { Editor, type EditorSelectionInfo } from './components/Editor';
 import { AgentPanel } from './components/AgentPanel';
 import { FileTree } from './components/FileTree';
 import { ResizeHandle } from './components/ResizeHandle';
-import { ChatLogPanel } from './components/ChatLogPanel';
+import { BottomPanel, type BottomPanelTab } from './components/BottomPanel';
+import {
+  type PowershellViewEntry,
+  type PowershellViewStatus,
+} from './components/PowershellPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { DebugToolsDialog } from './components/DebugToolsDialog';
+import { ContextMenu, type ContextMenuState } from './components/ContextMenu';
 import type { FileOpLogEntry } from './components/FileOpLog';
 import { TauriFileService } from './services/TauriFileService';
 import { WebViewAgentBridge } from './services/WebViewAgentBridge';
@@ -73,6 +82,11 @@ function buildShellLogContent(command: string, exitCode: number, output: string)
   return `PS> ${command}\n${consoleOut}\nexit code: ${exitCode}`;
 }
 
+/** CodeMirror 以 LF 保存，读取时规范化 */
+function normalizeEditorText(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
 const RESIZE_HANDLE_TOTAL_WIDTH = 10;
 const EDITOR_MIN_WIDTH = 100;
 const FILE_TREE_MIN_WIDTH = 120;
@@ -102,15 +116,27 @@ export default function App() {
   const [mainContentWidth, setMainContentWidth] = useState(0);
   const [chatLogEntries, setChatLogEntries] = useState<ChatLogEntry[]>([]);
   const [chatLogFilePath, setChatLogFilePath] = useState('');
+  const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('chat');
+  const [powershellEntries, setPowershellEntries] = useState<PowershellViewEntry[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<ToolPermissionsConfig>(mergeToolPermissions());
   const [settingsSaving, setSettingsSaving] = useState(false);
+  const [debugMenu, setDebugMenu] = useState<ContextMenuState | null>(null);
+  const [debugDialog, setDebugDialog] = useState<null | {
+    kind: 'agentMode' | 'lastCallTool';
+    title: string;
+    body: string;
+    sourceText?: string;
+  }>(null);
+  const [debugDialogBusy, setDebugDialogBusy] = useState(false);
 
   const configLoaderRef = useRef<ConfigLoader | null>(null);
   const userWorkspaceRef = useRef('');
   const parserRef = useRef<FileOperationParser | null>(null);
   const callToolParserRef = useRef<CallToolParser | null>(null);
   const webviewsCreatedRef = useRef<Set<string>>(new Set());
+  const onloadAgentModeDoneRef = useRef<Set<string>>(new Set());
+  const scheduleNewChatOnloadRef = useRef<(agentId: string) => void>(() => {});
   const boundsRef = useRef({ x: 0, y: 0, width: 400, height: 600 });
   const mainContentRef = useRef<HTMLElement | null>(null);
   const inflightToolOpsRef = useRef<Set<string>>(new Set());
@@ -122,6 +148,7 @@ export default function App() {
   const toolPermissionsRef = useRef<ToolPermissionsConfig>(mergeToolPermissions());
   const adminModeRef = useRef(false);
   const settingsOpenRef = useRef(false);
+  const debugDialogOpenRef = useRef(false);
   const incompleteHintRef = useRef<Set<string>>(new Set());
   const unknownToolHintRef = useRef<Set<string>>(new Set());
   const incompleteConfirmRef = useRef(new IncompleteCallToolConfirm());
@@ -141,7 +168,7 @@ export default function App() {
     >()
   );
   const handleAgentResponseRef = useRef<
-    (agentId: string, text: string, key?: number) => Promise<void>
+    (agentId: string, text: string, key?: number, opts?: { force?: boolean }) => Promise<void>
   >(async () => undefined);
 
   useEffect(() => {
@@ -172,6 +199,14 @@ export default function App() {
         .reverse()
         .find((entry) => entry.agentId === agentId && entry.role === 'agent')?.content ?? ''
     );
+  }, []);
+
+  const findLatestCallToolForAgent = useCallback((agentId: string) => {
+    const texts = [...conversationLogService.getEntries()]
+      .reverse()
+      .filter((entry) => entry.agentId === agentId && entry.role === 'agent')
+      .map((entry) => entry.content);
+    return findLatestCallToolSource(texts);
   }, []);
 
   const setAgentStatus = useCallback(
@@ -220,8 +255,16 @@ export default function App() {
   }, [workspaceRoot]);
 
   const handleContentChange = useCallback((newContent: string) => {
-    setContent(newContent);
-    setIsDirty(true);
+    setContent((prev) => {
+      if (prev === newContent) return prev;
+      setIsDirty(true);
+      return newContent;
+    });
+  }, []);
+
+  const loadEditorContent = useCallback((text: string) => {
+    setContent(normalizeEditorText(text));
+    setIsDirty(false);
   }, []);
 
   const getAgentName = useCallback(
@@ -338,7 +381,7 @@ export default function App() {
         workspaceRoot,
         resolvePath: resolveFilePath,
         filePath,
-        setContent,
+        setContent: (text: string) => setContent(normalizeEditorText(text)),
         setFilePath,
         setIsDirty,
         addLogEntry,
@@ -422,12 +465,15 @@ export default function App() {
   );
 
   const handleAgentResponse = useCallback(
-    async (agentId: string, text: string, key?: number) => {
-      const pending = pendingPowershellDecisionRef.current.get(agentId);
-      if (pending) {
-        pendingPowershellDecisionRef.current.delete(agentId);
-        pending.resolve(text);
-        return;
+    async (agentId: string, text: string, key?: number, opts?: { force?: boolean }) => {
+      const force = !!opts?.force;
+      if (!force) {
+        const pending = pendingPowershellDecisionRef.current.get(agentId);
+        if (pending) {
+          pendingPowershellDecisionRef.current.delete(agentId);
+          pending.resolve(text);
+          return;
+        }
       }
 
       setLastSync(new Date());
@@ -445,6 +491,10 @@ export default function App() {
       ];
 
       if (operations.length === 0) {
+        if (force) {
+          setAgentStatus(agentId, 'idle');
+          return;
+        }
         // 会话/桥接定稿都会进入；未知工具优先于缺 END_TOOL
         const unknownNames = findUnknownCallToolNames(text);
         if (unknownNames.length > 0) {
@@ -501,33 +551,37 @@ export default function App() {
 
       const opsFp = fileOperationsFingerprint(operations);
       const inflightKey = `${agentId}:${opsFp}`;
-      if (inflightToolOpsRef.current.has(inflightKey)) {
-        return;
-      }
+      if (!force) {
+        if (inflightToolOpsRef.current.has(inflightKey)) {
+          return;
+        }
 
-      const history = conversationLogService
-        .getEntries()
-        .filter(
-          (entry) =>
-            entry.agentId === agentId &&
-            (entry.role === 'agent' || entry.role === 'user' || entry.role === 'shell')
-        )
-        .map((entry) => entry.content)
-        .join('\n');
-      const lastEntry = conversationLogService
-        .getEntries()
-        .filter((entry) => entry.agentId === agentId)
-        .map((entry) => entry.content)
-        .at(-1);
-      const transcript =
-        lastEntry === text || history.includes(text) ? history : `${history}\n${text}`;
-      if (isToolCallAlreadyReported(transcript, operations)) {
-        setAgentStatus(agentId, 'idle');
-        return;
+        const history = conversationLogService
+          .getEntries()
+          .filter(
+            (entry) =>
+              entry.agentId === agentId &&
+              (entry.role === 'agent' || entry.role === 'user' || entry.role === 'shell')
+          )
+          .map((entry) => entry.content)
+          .join('\n');
+        const lastEntry = conversationLogService
+          .getEntries()
+          .filter((entry) => entry.agentId === agentId)
+          .map((entry) => entry.content)
+          .at(-1);
+        const transcript =
+          lastEntry === text || history.includes(text) ? history : `${history}\n${text}`;
+        if (isToolCallAlreadyReported(transcript, operations)) {
+          setAgentStatus(agentId, 'idle');
+          return;
+        }
       }
 
       setAgentStatus(agentId, 'waiting');
-      inflightToolOpsRef.current.add(inflightKey);
+      if (!force) {
+        inflightToolOpsRef.current.add(inflightKey);
+      }
       let awaitAgentReply = false;
 
       try {
@@ -589,6 +643,46 @@ export default function App() {
           const t0 = Date.now();
           let reported = 0;
           let sentFinal = false;
+          const viewId = generateId();
+          const agentName = getAgentName(agentId);
+
+          setBottomPanelTab('powershell');
+          setPowershellEntries((prev) => {
+            const next = [
+              ...prev,
+              {
+                id: viewId,
+                timestamp: new Date(),
+                agentName,
+                command,
+                output: '',
+                status: 'running' as const,
+                exitCode: null,
+              },
+            ];
+            return next.length > 100 ? next.slice(-100) : next;
+          });
+
+          const syncPowershellView = (
+            status?: PowershellViewStatus,
+            exitCode?: number | null
+          ) => {
+            const output = session.getOutput();
+            setPowershellEntries((prev) =>
+              prev.map((e) =>
+                e.id === viewId
+                  ? {
+                      ...e,
+                      output,
+                      status: status ?? e.status,
+                      exitCode: exitCode !== undefined ? exitCode : e.exitCode,
+                    }
+                  : e
+              )
+            );
+          };
+
+          const uiTimer = window.setInterval(() => syncPowershellView(), 400);
 
           const logShell = async (
             result: ToolApplyResult,
@@ -598,7 +692,7 @@ export default function App() {
             await conversationLogService.addEntry(
               'shell',
               agentId,
-              getAgentName(agentId),
+              agentName,
               buildShellLogContent(command, exitCode, output),
               'run_powershell',
               { command, exitCode, output, ok: result.ok }
@@ -606,9 +700,19 @@ export default function App() {
             refreshChatLog();
           };
 
+          const finishPowershellView = (
+            status: PowershellViewStatus,
+            exitCode: number
+          ) => {
+            window.clearInterval(uiTimer);
+            syncPowershellView(status, exitCode);
+          };
+
           const sendFinal = async (result: ToolApplyResult, exitCode: number) => {
             if (sentFinal) return;
             sentFinal = true;
+            const status: PowershellViewStatus = exitCode < 0 ? 'killed' : 'done';
+            finishPowershellView(status, exitCode);
             addLogEntry(op, result.ok ? 'applied' : 'error', result.message);
             publishLastFileOp(op, result.ok ? 'applied' : 'error', result.message);
             await logShell(result, exitCode);
@@ -620,80 +724,96 @@ export default function App() {
           };
 
           let skippedReply: string | undefined;
-          while (true) {
-            const outcome = await session.wait(POWERSHELL_PROGRESS_INTERVAL_MS);
-            if (outcome === 'exited') {
-              const exitCode = session.getExitCode() ?? 1;
-              await sendFinal(
-                buildPowershellFinalResult({
-                  content: session.getOutput(),
-                  exitCode,
-                }),
-                exitCode
+          let detachedToBackground = false;
+          try {
+            while (true) {
+              const outcome = await session.wait(POWERSHELL_PROGRESS_INTERVAL_MS);
+              if (outcome === 'exited') {
+                const exitCode = session.getExitCode() ?? 1;
+                await sendFinal(
+                  buildPowershellFinalResult({
+                    content: session.getOutput(),
+                    exitCode,
+                  }),
+                  exitCode
+                );
+                break;
+              }
+              if (outcome === 'killed') {
+                await sendFinal(
+                  buildPowershellTerminatedResult({
+                    content: session.getOutput(),
+                    reason: 'user',
+                  }),
+                  -1
+                );
+                break;
+              }
+
+              const all = session.getOutput();
+              const neu = all.slice(reported);
+              reported = all.length;
+              const elapsedSec = Math.round((Date.now() - t0) / 1000);
+              await sendToolResultToAgent(
+                agentId,
+                buildPowershellProgressMessage({
+                  command,
+                  elapsedSec,
+                  newOutput: neu,
+                })
               );
+              awaitAgentReply = true;
+
+              const reply = await new Promise<string | null>((resolve) => {
+                const prev = pendingPowershellDecisionRef.current.get(agentId);
+                if (prev) prev.resolve(null);
+                pendingPowershellDecisionRef.current.set(agentId, { resolve });
+              });
+              pendingPowershellDecisionRef.current.delete(agentId);
+
+              if (reply === null) {
+                if (!session.isExited()) session.kill();
+                await sendFinal(
+                  buildPowershellTerminatedResult({
+                    content: session.getOutput(),
+                    reason: 'user',
+                  }),
+                  -1
+                );
+                break;
+              }
+
+              const decision = parsePowershellWaitDecision(reply);
+              if (decision === 'continue') continue;
+              if (decision === 'terminate') {
+                session.kill();
+                await session.wait(Number.POSITIVE_INFINITY);
+                await sendFinal(
+                  buildPowershellTerminatedResult({
+                    content: session.getOutput(),
+                    reason: 'agent',
+                  }),
+                  -1
+                );
+                break;
+              }
+              skippedReply = reply;
+              detachedToBackground = true;
+              window.clearInterval(uiTimer);
+              const bgTimer = window.setInterval(() => {
+                syncPowershellView();
+                if (session.isExited()) {
+                  window.clearInterval(bgTimer);
+                  syncPowershellView('done', session.getExitCode() ?? -1);
+                }
+              }, 1000);
+              session.watchInBackground?.();
               break;
             }
-            if (outcome === 'killed') {
-              await sendFinal(
-                buildPowershellTerminatedResult({
-                  content: session.getOutput(),
-                  reason: 'user',
-                }),
-                -1
-              );
-              break;
+          } finally {
+            if (!detachedToBackground) {
+              window.clearInterval(uiTimer);
             }
-
-            const all = session.getOutput();
-            const neu = all.slice(reported);
-            reported = all.length;
-            const elapsedSec = Math.round((Date.now() - t0) / 1000);
-            await sendToolResultToAgent(
-              agentId,
-              buildPowershellProgressMessage({
-                command,
-                elapsedSec,
-                newOutput: neu,
-              })
-            );
-            awaitAgentReply = true;
-
-            const reply = await new Promise<string | null>((resolve) => {
-              const prev = pendingPowershellDecisionRef.current.get(agentId);
-              if (prev) prev.resolve(null);
-              pendingPowershellDecisionRef.current.set(agentId, { resolve });
-            });
-            pendingPowershellDecisionRef.current.delete(agentId);
-
-            if (reply === null) {
-              if (!session.isExited()) session.kill();
-              await sendFinal(
-                buildPowershellTerminatedResult({
-                  content: session.getOutput(),
-                  reason: 'user',
-                }),
-                -1
-              );
-              break;
-            }
-
-            const decision = parsePowershellWaitDecision(reply);
-            if (decision === 'continue') continue;
-            if (decision === 'terminate') {
-              session.kill();
-              await session.wait(Number.POSITIVE_INFINITY);
-              await sendFinal(
-                buildPowershellTerminatedResult({
-                  content: session.getOutput(),
-                  reason: 'agent',
-                }),
-                -1
-              );
-              break;
-            }
-            skippedReply = reply;
-            session.watchInBackground?.();
-            break;
           }
 
           if (skippedReply) {
@@ -710,7 +830,9 @@ export default function App() {
         awaitAgentReply = true;
       }
       } finally {
-        inflightToolOpsRef.current.delete(inflightKey);
+        if (!force) {
+          inflightToolOpsRef.current.delete(inflightKey);
+        }
       }
 
       setAgentStatus(agentId, awaitAgentReply ? 'waiting' : 'idle');
@@ -844,10 +966,12 @@ export default function App() {
             const scriptPath = agent.injectScript.replace(/^scripts\//, 'scripts/');
             const src = await fileService.readBridgeScript(scriptPath);
             const limits = parseFileLineLimitsFromBridgeScript(src);
+            const siteAgentPrompt = parseSiteAgentPromptFromBridgeScript(src);
             return {
               ...agent,
               ...(limits.read != null ? { readFileLineLimit: limits.read } : {}),
               ...(limits.write != null ? { writeFileLineLimit: limits.write } : {}),
+              ...(siteAgentPrompt ? { siteAgentPrompt } : {}),
             };
           } catch {
             return agent;
@@ -901,7 +1025,7 @@ export default function App() {
   }, []);
 
   const syncAgentWebviewVisibility = useCallback(async () => {
-    if (settingsOpenRef.current) {
+    if (settingsOpenRef.current || debugDialogOpenRef.current) {
       await hideAllAgentWebviews();
       return;
     }
@@ -914,6 +1038,7 @@ export default function App() {
     } catch (err) {
       console.warn(`showWebview failed: ${activeId}`, err);
       webviewsCreatedRef.current.delete(activeId);
+      onloadAgentModeDoneRef.current.delete(activeId);
     }
     for (const agent of agents) {
       if (agent.id === activeId) continue;
@@ -926,6 +1051,85 @@ export default function App() {
     }
   }, [agents, hideAllAgentWebviews]);
 
+  const openDebugToolsMenu = useCallback(
+    (e: MouseEvent<HTMLButtonElement>) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const openDialog = (dialog: {
+        kind: 'agentMode' | 'lastCallTool';
+        title: string;
+        body: string;
+        sourceText?: string;
+      }) => {
+        debugDialogOpenRef.current = true;
+        setDebugDialog(dialog);
+        void hideAllAgentWebviews();
+      };
+      setDebugMenu({
+        x: rect.left,
+        y: rect.bottom + 4,
+        items: [
+          {
+            type: 'item',
+            id: 'agent-mode-prompt',
+            label: 'Agent mode promet',
+            onClick: () => {
+              const root =
+                workspaceRoot || userWorkspaceRef.current || fileService.getWorkspaceRoot();
+              const targetId = activeAgentIdRef.current;
+              const agent = targetId
+                ? agentsRef.current.find((a) => a.id === targetId)
+                : undefined;
+              const body = buildAgentModePrompt(
+                root || undefined,
+                agent?.readFileLineLimit,
+                toolPermissionsRef.current,
+                agent?.writeFileLineLimit,
+                agent?.siteAgentPrompt
+              );
+              openDialog({ kind: 'agentMode', title: 'Agent mode promet', body });
+            },
+          },
+          {
+            type: 'item',
+            id: 'last-call-tool',
+            label: 'Last call-tool',
+            onClick: () => {
+              const targetId = activeAgentIdRef.current;
+              const found = targetId ? findLatestCallToolForAgent(targetId) : null;
+              openDialog({
+                kind: 'lastCallTool',
+                title: 'Last call-tool',
+                body: found ? found.blocks.join('\n\n') : '(无 call-tool)',
+                sourceText: found?.text,
+              });
+            },
+          },
+          {
+            type: 'item',
+            id: 'stop-terminal',
+            label: 'Stop Terminal',
+            onClick: () => {
+              void handleKillTerminal();
+            },
+          },
+        ],
+      });
+    },
+    [
+      findLatestCallToolForAgent,
+      handleKillTerminal,
+      hideAllAgentWebviews,
+      workspaceRoot,
+    ]
+  );
+
+  const handleCloseDebugDialog = useCallback(() => {
+    if (debugDialogBusy) return;
+    debugDialogOpenRef.current = false;
+    setDebugDialog(null);
+    void syncAgentWebviewVisibility();
+  }, [debugDialogBusy, syncAgentWebviewVisibility]);
+
   // 首次切到该 Agent 时按需创建 WebView
   const ensureAgentWebview = useCallback(
     async (agentId: string) => {
@@ -937,7 +1141,7 @@ export default function App() {
       const bounds = boundsRef.current;
 
       if (webviewsCreatedRef.current.has(agentId)) {
-        if (settingsOpenRef.current) return;
+        if (settingsOpenRef.current || debugDialogOpenRef.current) return;
         try {
           await agentBridge.showWebview(agentId, bounds);
           for (const other of agents) {
@@ -949,9 +1153,11 @@ export default function App() {
               // 未创建可忽略
             }
           }
+          scheduleNewChatOnloadRef.current(agentId);
           return;
         } catch {
           webviewsCreatedRef.current.delete(agentId);
+          onloadAgentModeDoneRef.current.delete(agentId);
         }
       }
 
@@ -969,6 +1175,7 @@ export default function App() {
         );
         await agentBridge.createWebview(agent, bounds, bridgeScript, defaultScript);
         webviewsCreatedRef.current.add(agentId);
+        scheduleNewChatOnloadRef.current(agentId);
       } catch (err) {
         console.warn(`Agent script load failed: ${agentId}`, err);
         return;
@@ -1023,9 +1230,8 @@ export default function App() {
     try {
       const result = await fileService.openFileDialog();
       if (result) {
-        setContent(result.content);
         setFilePath(result.path);
-        setIsDirty(false);
+        loadEditorContent(result.content);
       }
     } catch (err) {
       console.error(err);
@@ -1034,7 +1240,7 @@ export default function App() {
         kind: 'error',
       });
     }
-  }, []);
+  }, [loadEditorContent]);
 
   const handleOpenFolder = useCallback(async () => {
     const folder = await fileService.openFolderDialog();
@@ -1061,9 +1267,8 @@ export default function App() {
       }
       try {
         const fileContent = await fileService.readFile(path);
-        setContent(fileContent);
         setFilePath(path);
-        setIsDirty(false);
+        loadEditorContent(fileContent);
       } catch (err) {
         console.error(err);
         await message('无法读取该文件，可能不是文本文件。', {
@@ -1072,7 +1277,7 @@ export default function App() {
         });
       }
     },
-    [filePath, isDirty]
+    [filePath, isDirty, loadEditorContent]
   );
 
   const handleSave = useCallback(async () => {
@@ -1223,7 +1428,112 @@ export default function App() {
     }
   }, [settingsDraft, syncAgentWebviewVisibility]);
 
-  const handleSendAgentMode = useCallback(async () => {
+  const handleSendAgentMode = useCallback(async (explicitAgentId?: string) => {
+    const root = workspaceRoot || userWorkspaceRef.current || fileService.getWorkspaceRoot();
+    if (!root) return;
+    const targetId = explicitAgentId || activeAgentIdRef.current;
+    if (!targetId) return;
+    const agent = agentsRef.current.find((a) => a.id === targetId);
+    const msg = buildAgentModePrompt(
+      root || undefined,
+      agent?.readFileLineLimit,
+      toolPermissionsRef.current,
+      agent?.writeFileLineLimit,
+      agent?.siteAgentPrompt
+    );
+    setAgentModeEnabled(true);
+    await agentBridge.pushBridgeConfig(targetId, {
+      inputMode: agent?.inputMode,
+      typeStrategy: agent?.typeStrategy,
+      waitBeforeSend: agent?.waitBeforeSend,
+    });
+    // 一次性 send（fill+clickSend 分步容易失败）
+    await logUserMessage(targetId, msg, 'Agent 模式');
+    setAgentStatus(targetId, 'sending');
+    await agentBridge.sendMessage(targetId, msg);
+    setAgentStatus(targetId, 'waiting');
+  }, [workspaceRoot, logUserMessage, setAgentStatus]);
+
+  const handleDebugDialogPrimary = useCallback(async () => {
+    if (!debugDialog) return;
+    setDebugDialogBusy(true);
+    try {
+      if (debugDialog.kind === 'agentMode') {
+        await handleSendAgentMode();
+        debugDialogOpenRef.current = false;
+        setDebugDialog(null);
+        void syncAgentWebviewVisibility();
+        return;
+      }
+      const targetId = activeAgentIdRef.current;
+      if (!targetId) return;
+      const text =
+        debugDialog.sourceText ||
+        findLatestCallToolForAgent(targetId)?.text ||
+        '';
+      if (!text || extractCallToolSourceBlocks(text).length === 0) {
+        await message('无 call-tool 可执行');
+        return;
+      }
+      await handleAgentResponse(targetId, text, undefined, { force: true });
+      debugDialogOpenRef.current = false;
+      setDebugDialog(null);
+      void syncAgentWebviewVisibility();
+    } finally {
+      setDebugDialogBusy(false);
+    }
+  }, [
+    debugDialog,
+    findLatestCallToolForAgent,
+    handleAgentResponse,
+    handleSendAgentMode,
+    syncAgentWebviewVisibility,
+  ]);
+
+  // @newChatOnload: composer 就绪后等 5s 再发送 Agent 模式
+  scheduleNewChatOnloadRef.current = (agentId: string) => {
+    void (async () => {
+      const agent = agentsRef.current.find((a) => a.id === agentId);
+      if (!agent?.newChatOnload) return;
+      const deadline = Date.now() + 180000;
+      while (Date.now() < deadline) {
+        if (onloadAgentModeDoneRef.current.has(agentId)) return;
+        let ready = false;
+        try {
+          ready = await agentBridge.isComposerReady(agentId);
+        } catch {
+          ready = false;
+        }
+        if (ready) {
+          await new Promise((r) => setTimeout(r, 5000));
+          if (onloadAgentModeDoneRef.current.has(agentId)) return;
+          onloadAgentModeDoneRef.current.add(agentId);
+          try {
+            await handleSendAgentMode(agentId);
+          } catch (err) {
+            onloadAgentModeDoneRef.current.delete(agentId);
+            console.error('[App] newChatOnload sendAgentMode failed', err);
+          }
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      console.warn('[App] newChatOnload: composer ready timeout', agentId);
+    })();
+  };
+
+  useEffect(() => {
+    // Host flush 事件（供扩展用）。桌面端以 scheduleNewChatOnload 为主路径
+    agentBridge.onNewChatOnloadAgentMode(async (agentId) => {
+      if (onloadAgentModeDoneRef.current.has(agentId)) return;
+      const agent = agentsRef.current.find((a) => a.id === agentId);
+      if (!agent?.newChatOnload) return;
+      scheduleNewChatOnloadRef.current(agentId);
+    });
+  }, [handleSendAgentMode, workspaceRoot]);
+
+  /** Debug：只注入 Agent 模式提示词，不点发送 */
+  const handleFillAgentMode = useCallback(async () => {
     if (!workspaceRoot) return;
     const targetId = activeAgentIdRef.current;
     if (!targetId) return;
@@ -1232,11 +1542,36 @@ export default function App() {
       workspaceRoot || undefined,
       agent?.readFileLineLimit,
       toolPermissionsRef.current,
-      agent?.writeFileLineLimit
+      agent?.writeFileLineLimit,
+      agent?.siteAgentPrompt
     );
     setAgentModeEnabled(true);
-    await logAndSendToAgent(msg, 'Agent 模式', targetId);
-  }, [workspaceRoot, logAndSendToAgent]);
+    await agentBridge.pushBridgeConfig(targetId, {
+      inputMode: agent?.inputMode,
+      typeStrategy: agent?.typeStrategy,
+      waitBeforeSend: agent?.waitBeforeSend,
+    });
+    await logAndFillAgent(msg, 'Agent 模式填入', targetId);
+  }, [workspaceRoot, logAndFillAgent]);
+
+  const handleClickSend = useCallback(async () => {
+    const targetId = activeAgentIdRef.current;
+    if (!targetId) return;
+    await agentBridge.clickSend(targetId);
+  }, []);
+
+  const handleNewChatSession = useCallback(async () => {
+    if (!workspaceRoot) return;
+    const targetId = activeAgentIdRef.current;
+    if (!targetId) return;
+    try {
+      await agentBridge.newChatSession(targetId);
+      await new Promise((r) => setTimeout(r, 500));
+      await handleSendAgentMode();
+    } catch (err) {
+      await message(`新会话失败：${String(err)}`, { title: '新会话', kind: 'error' });
+    }
+  }, [workspaceRoot, handleSendAgentMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1251,6 +1586,9 @@ export default function App() {
         'send-current-file': () => handleSendCurrentFile(),
         'send-selection': () => handleSendSelection(),
         'agent-mode': () => handleSendAgentMode(),
+        'fill-agent-mode': () => handleFillAgentMode(),
+        'click-send': () => handleClickSend(),
+        'new-chat-session': () => handleNewChatSession(),
       },
       openFolder: async (path?: string) => {
         if (path) {
@@ -1300,6 +1638,9 @@ export default function App() {
     handleSendCurrentFile,
     handleSendSelection,
     handleSendAgentMode,
+    handleFillAgentMode,
+    handleClickSend,
+    handleNewChatSession,
     logAndSendToAgent,
     handleSelectAgent,
     ensureAgentWebview,
@@ -1311,10 +1652,20 @@ export default function App() {
     refreshChatLog();
   }, [refreshChatLog]);
 
+  const handleClearPowershell = useCallback(() => {
+    setPowershellEntries((prev) => prev.filter((e) => e.status === 'running'));
+  }, []);
+
+  const handleClearFileOps = useCallback(() => {
+    setLogEntries([]);
+  }, []);
+
+  const powershellRunningCount = powershellEntries.filter((e) => e.status === 'running').length;
+
   const handleBoundsChange = useCallback(
     (bounds: { x: number; y: number; width: number; height: number }) => {
       boundsRef.current = bounds;
-      if (settingsOpenRef.current) return;
+      if (settingsOpenRef.current || debugDialogOpenRef.current) return;
       if (activeAgentId) {
         agentBridge.showWebview(activeAgentId, bounds).catch(console.error);
       }
@@ -1418,14 +1769,14 @@ export default function App() {
             填入选中 (Ctrl+Shift+A)
           </button>
           <button
-            className={agentModeEnabled ? 'agent-mode-btn active' : 'agent-mode-btn'}
-            onClick={handleSendAgentMode}
+            onClick={() => void handleNewChatSession()}
             disabled={!workspaceRoot}
+            title="开启新会话并注入 Agent 模式提示词"
           >
-            Agent 模式
+            新会话
           </button>
-          <button onClick={() => void handleKillTerminal()} title="终止所有 run_powershell 进程">
-            终止终端
+          <button type="button" onClick={openDebugToolsMenu} title="调试工具">
+            调试工具
           </button>
           <button onClick={handleOpenSettings}>设置</button>
         </div>
@@ -1470,10 +1821,17 @@ export default function App() {
               onSave={handleSave}
             />
           </div>
-          <ChatLogPanel
-            entries={chatLogEntries}
-            logFilePath={chatLogFilePath}
-            onClear={handleClearChatLog}
+          <BottomPanel
+            activeTab={bottomPanelTab}
+            onTabChange={setBottomPanelTab}
+            chatEntries={chatLogEntries}
+            chatLogFilePath={chatLogFilePath}
+            onClearChat={handleClearChatLog}
+            powershellEntries={powershellEntries}
+            onClearPowershell={handleClearPowershell}
+            runningCount={powershellRunningCount}
+            fileOpEntries={logEntries}
+            onClearFileOps={handleClearFileOps}
           />
         </section>
 
@@ -1490,7 +1848,6 @@ export default function App() {
           agents={agents}
           activeAgentId={activeAgentId}
           agentStatuses={agentStatuses}
-          logEntries={logEntries}
           workspaceReady={!!workspaceRoot}
           onSelectAgent={handleSelectAgent}
           onBoundsChange={handleBoundsChange}
@@ -1512,6 +1869,19 @@ export default function App() {
         onSave={() => void handleSaveSettings()}
         onClose={handleCloseSettings}
         saving={settingsSaving}
+      />
+      <ContextMenu menu={debugMenu} onClose={() => setDebugMenu(null)} />
+      <DebugToolsDialog
+        open={!!debugDialog}
+        title={debugDialog?.title ?? ''}
+        body={debugDialog?.body ?? ''}
+        primaryLabel={debugDialog?.kind === 'lastCallTool' ? 'execute' : 'Send'}
+        onPrimary={handleDebugDialogPrimary}
+        onClose={handleCloseDebugDialog}
+        primaryDisabled={
+          debugDialog?.kind === 'agentMode' ? !workspaceRoot : debugDialog?.body === '(无 call-tool)'
+        }
+        busy={debugDialogBusy}
       />
     </div>
   );

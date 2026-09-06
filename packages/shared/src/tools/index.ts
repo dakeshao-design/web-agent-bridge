@@ -23,4 +23,9 @@ export {
   getToolByAction,
   parseToolCall,
 } from './registry.js';
-export { parseCallToolBlocks, stripMarkdownLineNumbers } from './parseCallTool.js';
+export {
+  parseCallToolBlocks,
+  extractCallToolSourceBlocks,
+  findLatestCallToolSource,
+  stripMarkdownLineNumbers,
+} from './parseCallTool.js';

@@ -76,5 +76,28 @@ export function parseBridgeScriptMeta(
     if (Number.isFinite(n) && n >= 0) agent.typeDelayMs = n;
   }
 
+  const waitBeforeSendRaw = tags.get('waitBeforeSend');
+  if (waitBeforeSendRaw != null) {
+    const n = Number.parseInt(waitBeforeSendRaw, 10);
+    if (Number.isFinite(n) && n >= 0) agent.waitBeforeSend = n;
+  }
+
+  const newChatOnload = parseEnabled(tags.get('newChatOnload'));
+  if (newChatOnload !== undefined) {
+    agent.newChatOnload = newChatOnload;
+  }
+
+  const readLimitRaw = tags.get('readFileLineLimit');
+  if (readLimitRaw != null) {
+    const n = Number.parseInt(readLimitRaw, 10);
+    if (Number.isFinite(n) && n > 0) agent.readFileLineLimit = n;
+  }
+
+  const writeLimitRaw = tags.get('writeFileLineLimit');
+  if (writeLimitRaw != null) {
+    const n = Number.parseInt(writeLimitRaw, 10);
+    if (Number.isFinite(n) && n > 0) agent.writeFileLineLimit = n;
+  }
+
   return agent;
 }

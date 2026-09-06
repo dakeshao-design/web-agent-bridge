@@ -2,14 +2,12 @@ import { useRef, useEffect } from 'react';
 import type { AgentConfig, AgentStatus } from '@my-agent-editor/shared';
 import { AgentTab } from './AgentTab';
 import { AgentUrlBar } from './AgentUrlBar';
-import { FileOpLog, type FileOpLogEntry } from './FileOpLog';
 
 interface AgentPanelProps {
   width: number;
   agents: AgentConfig[];
   activeAgentId: string | null;
   agentStatuses: Record<string, AgentStatus>;
-  logEntries: FileOpLogEntry[];
   workspaceReady: boolean;
   onSelectAgent: (id: string) => void;
   onBoundsChange: (bounds: { x: number; y: number; width: number; height: number }) => void;
@@ -20,7 +18,6 @@ export function AgentPanel({
   agents,
   activeAgentId,
   agentStatuses,
-  logEntries,
   workspaceReady,
   onSelectAgent,
   onBoundsChange,
@@ -73,7 +70,6 @@ export function AgentPanel({
           <div className="agent-webview-placeholder">请先打开工作区</div>
         )}
       </div>
-      <FileOpLog entries={logEntries} />
     </div>
   );
 }

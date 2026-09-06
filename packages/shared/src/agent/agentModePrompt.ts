@@ -54,11 +54,13 @@ export function buildAgentModePrompt(
   workspaceRoot?: string,
   readFileLineLimit?: number,
   toolPermissions?: ToolPermissionsConfig | null,
-  writeFileLineLimit?: number
+  writeFileLineLimit?: number,
+  siteAgentPrompt?: string
 ): string {
   void workspaceRoot;
   const tools = listToolsForPrompt(toolPermissions);
   const limitSection = buildFileLineLimitSection(readFileLineLimit, writeFileLineLimit);
+  const site = siteAgentPrompt?.trim();
 
   return `你处于 **Agent 模式** 下，当前工作区只有使用 \`call-tool\` 代码块调用工具才能访问。
 
@@ -104,6 +106,6 @@ END_ARG
 END_TOOL
 \`\`\`\`\`\`
 </tool_use_instructions>
-
+${site ? '\n${site}\n' : ''}
 本轮不要回复，等待用户输入。`;
 }

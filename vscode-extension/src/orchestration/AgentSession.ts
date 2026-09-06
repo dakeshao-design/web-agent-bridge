@@ -21,6 +21,8 @@ import {
   mergeToolPermissions,
   buildSelectionMessage,
   parseFileLineLimitsFromBridgeScript,
+  parseSiteAgentPromptFromBridgeScript,
+  findLatestCallToolSource,
   POWERSHELL_PROGRESS_INTERVAL_MS,
   parsePowershellWaitDecision,
   resolveEffectivePermission,
@@ -76,6 +78,7 @@ export class AgentSession {
   private chats: ChatEntry[] = [];
   private logs: LogEntry[] = [];
   private agentModeEnabled = false;
+  private onloadAgentModeDone = new Set<string>();
   private parser = new FileOperationParser('structured');
   private callToolParser = new CallToolParser();
   private inflightToolOps = new Set<string>();
@@ -121,6 +124,14 @@ export class AgentSession {
         .reverse()
         .find((c) => c.agentId === agentId && c.role === 'agent')?.text ?? ''
     );
+  }
+
+  private findLatestCallToolForAgent(agentId: string) {
+    const texts = [...this.chats]
+      .reverse()
+      .filter((c) => c.agentId === agentId && c.role === 'agent')
+      .map((c) => c.text);
+    return findLatestCallToolSource(texts);
   }
 
   private setStatus(agentId: string, status: AgentStatus): void {
@@ -238,6 +249,13 @@ export class AgentSession {
         this.setStatus(agentId, 'idle');
       }
     });
+    this.bridge.onNewChatOnloadAgentMode(async (agentId) => {
+      if (this.onloadAgentModeDone.has(agentId)) return;
+      const agent = this.agents.find((a) => a.id === agentId);
+      if (!agent?.newChatOnload) return;
+      this.onloadAgentModeDone.add(agentId);
+      await this.sendAgentMode(agentId);
+    });
     this.bridge.startEventLoop();
     this.startWaitingPoll();
 
@@ -282,10 +300,12 @@ export class AgentSession {
         try {
           const src = await this.configService.readBridgeScript(agent.injectScript);
           const limits = parseFileLineLimitsFromBridgeScript(src);
+          const siteAgentPrompt = parseSiteAgentPromptFromBridgeScript(src);
           return {
             ...agent,
             ...(limits.read != null ? { readFileLineLimit: limits.read } : {}),
             ...(limits.write != null ? { writeFileLineLimit: limits.write } : {}),
+            ...(siteAgentPrompt ? { siteAgentPrompt } : {}),
           };
         } catch {
           return agent;
@@ -303,20 +323,22 @@ export class AgentSession {
       return;
     }
 
-    for (const agent of this.agents) {
-      if (this.bridge.hasAgent(agent.id)) continue;
-      try {
-        const siteScript = await this.configService.readBridgeScript(agent.injectScript);
-        await this.bridge.createAgent(agent, siteScript, template, true);
-        this.statuses[agent.id] = 'idle';
-      } catch (err) {
-        this.statuses[agent.id] = 'error';
-        this.chats.push({
-          agentId: agent.id,
-          role: 'system',
-          text: `创建 Agent 失败: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+    // 仅创建当前活动 Agent，避免其它站点静默窗意外弹出
+    const agent = this.agents.find((a) => a.id === this.activeAgentId);
+    if (!agent) return;
+    if (this.bridge.hasAgent(agent.id)) return;
+
+    try {
+      const siteScript = await this.configService.readBridgeScript(agent.injectScript);
+      await this.bridge.createAgent(agent, siteScript, template, true);
+      this.statuses[agent.id] = 'idle';
+    } catch (err) {
+      this.statuses[agent.id] = 'error';
+      this.chats.push({
+        agentId: agent.id,
+        role: 'system',
+        text: `创建 Agent 失败: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
     this.notify();
   }
@@ -324,10 +346,13 @@ export class AgentSession {
   setActiveAgent(id: string): void {
     this.activeAgentId = id;
     this.notify();
+    if (this.host.isStarted()) {
+      void this.ensureWebviews();
+    }
   }
 
-  async sendChat(text: string): Promise<void> {
-    const agentId = this.activeAgentId;
+  async sendChat(text: string, explicitAgentId?: string): Promise<void> {
+    const agentId = explicitAgentId || this.activeAgentId;
     if (!agentId || !text.trim()) return;
     await this.ensureHostAndAgents();
     this.chats.push({ agentId, role: 'user', text });
@@ -375,17 +400,71 @@ export class AgentSession {
     await this.sendChat(msg);
   }
 
-  async sendAgentMode(): Promise<void> {
+  async sendAgentMode(explicitAgentId?: string): Promise<void> {
+    const agentId = explicitAgentId || this.activeAgentId;
     const root = this.fileService.getWorkspaceRoot();
-    const agent = this.agents.find((a) => a.id === this.activeAgentId);
+    const agent = this.agents.find((a) => a.id === agentId);
     const msg = buildAgentModePrompt(
       root || undefined,
       agent?.readFileLineLimit,
       this.toolPermissions,
-      agent?.writeFileLineLimit
+      agent?.writeFileLineLimit,
+      agent?.siteAgentPrompt
     );
     this.agentModeEnabled = true;
-    await this.sendChat(msg);
+    await this.sendChat(msg, agentId || undefined);
+  }
+
+  getAgentModePromptText(): string {
+    const agentId = this.activeAgentId;
+    const root = this.fileService.getWorkspaceRoot();
+    const agent = this.agents.find((a) => a.id === agentId);
+    return buildAgentModePrompt(
+      root || undefined,
+      agent?.readFileLineLimit,
+      this.toolPermissions,
+      agent?.writeFileLineLimit,
+      agent?.siteAgentPrompt
+    );
+  }
+
+  getLastCallToolBlocks(): string {
+    const agentId = this.activeAgentId;
+    if (!agentId) return '';
+    const found = this.findLatestCallToolForAgent(agentId);
+    return found ? found.blocks.join('\n\n') : '';
+  }
+
+  async executeLastCallToolForce(): Promise<void> {
+    const agentId = this.activeAgentId;
+    if (!agentId) {
+      void vscode.window.showWarningMessage('请先选择 Agent');
+      return;
+    }
+    const found = this.findLatestCallToolForAgent(agentId);
+    if (!found) {
+      void vscode.window.showInformationMessage('无 call-tool 可执行');
+      return;
+    }
+    await this.handleAgentResponse(agentId, found.text, undefined, { force: true });
+  }
+
+  /** 新会话：站点 newChatSession 完成后等待 0.5s，再注入 Agent 模式提示词 */
+  async newChatSession(): Promise<void> {
+    const agentId = this.activeAgentId;
+    if (!agentId) {
+      void vscode.window.showWarningMessage('请先选择 Agent');
+      return;
+    }
+    try {
+      await this.ensureHostAndAgents();
+      await this.bridge.newChatSession(agentId);
+      await new Promise((r) => setTimeout(r, 500));
+      await this.sendAgentMode();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(`新会话失败: ${msg}`);
+    }
   }
 
   async showLogin(): Promise<void> {
@@ -403,6 +482,7 @@ export class AgentSession {
         if (!/not found/i.test(msg)) throw err;
         // 用户手动关闭后窗口已销毁，重建再打开
         this.bridge.forgetAgent(agentId);
+        this.onloadAgentModeDone.delete(agentId);
         await this.ensureWebviews();
         await this.bridge.showForLogin(agentId);
       }
@@ -559,13 +639,17 @@ export class AgentSession {
   private async handleAgentResponse(
     agentId: string,
     text: string,
-    key?: number
+    key?: number,
+    opts?: { force?: boolean }
   ): Promise<void> {
-    const pending = this.pendingDecisions.get(agentId);
-    if (pending) {
-      this.pendingDecisions.delete(agentId);
-      pending.resolve(text);
-      return;
+    const force = !!opts?.force;
+    if (!force) {
+      const pending = this.pendingDecisions.get(agentId);
+      if (pending) {
+        this.pendingDecisions.delete(agentId);
+        pending.resolve(text);
+        return;
+      }
     }
 
     const operations = [
@@ -573,6 +657,10 @@ export class AgentSession {
       ...this.callToolParser.parse(text),
     ];
     if (operations.length === 0) {
+      if (force) {
+        this.setStatus(agentId, 'idle');
+        return;
+      }
       const unknownNames = findUnknownCallToolNames(text);
       if (unknownNames.length > 0) {
         const hintKey = `${agentId}:unknown:${unknownNames.join(',')}`;
@@ -627,20 +715,24 @@ export class AgentSession {
 
     const opsFp = fileOperationsFingerprint(operations);
     const inflightKey = `${agentId}:${opsFp}`;
-    if (this.inflightToolOps.has(inflightKey)) return;
+    if (!force) {
+      if (this.inflightToolOps.has(inflightKey)) return;
 
-    const history = this.chats
-      .filter((c) => c.agentId === agentId && (c.role === 'user' || c.role === 'agent'))
-      .map((c) => c.text)
-      .join('\n');
-    const last = this.chats.filter((c) => c.agentId === agentId).at(-1)?.text;
-    const transcript = last === text || history.includes(text) ? history : `${history}\n${text}`;
-    if (isToolCallAlreadyReported(transcript, operations)) {
-      this.setStatus(agentId, 'idle');
-      return;
+      const history = this.chats
+        .filter((c) => c.agentId === agentId && (c.role === 'user' || c.role === 'agent'))
+        .map((c) => c.text)
+        .join('\n');
+      const last = this.chats.filter((c) => c.agentId === agentId).at(-1)?.text;
+      const transcript = last === text || history.includes(text) ? history : `${history}\n${text}`;
+      if (isToolCallAlreadyReported(transcript, operations)) {
+        this.setStatus(agentId, 'idle');
+        return;
+      }
     }
 
-    this.inflightToolOps.add(inflightKey);
+    if (!force) {
+      this.inflightToolOps.add(inflightKey);
+    }
     this.setStatus(agentId, 'waiting');
     let awaitAgentReply = false;
 
@@ -702,7 +794,9 @@ export class AgentSession {
       awaitAgentReply = true;
     }
     } finally {
-      this.inflightToolOps.delete(inflightKey);
+      if (!force) {
+        this.inflightToolOps.delete(inflightKey);
+      }
     }
     this.setStatus(agentId, awaitAgentReply ? 'waiting' : 'idle');
   }

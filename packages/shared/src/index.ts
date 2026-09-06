@@ -30,6 +30,7 @@ export {
 } from './agent/agentModePrompt.js';
 export {
   parseFileLineLimitsFromBridgeScript,
+  parseSiteAgentPromptFromBridgeScript,
   countContentLines,
   buildReadFileOverLimitMessage,
 } from './agent/fileLineLimit.js';
@@ -92,6 +93,8 @@ export {
   getToolByAction,
   parseToolCall,
   parseCallToolBlocks,
+  extractCallToolSourceBlocks,
+  findLatestCallToolSource,
   readFileTool,
   readFileRangeTool,
   countFileRowsTool,

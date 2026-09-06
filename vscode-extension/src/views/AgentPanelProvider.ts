@@ -43,6 +43,33 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         case 'agentMode':
           await this.session.sendAgentMode();
           break;
+        case 'getAgentModePrompt':
+          this.view?.webview.postMessage({
+            type: 'debugDialog',
+            kind: 'agentMode',
+            title: 'Agent mode promet',
+            body: this.session.getAgentModePromptText(),
+          });
+          break;
+        case 'sendAgentModePrompt':
+          await this.session.sendAgentMode();
+          break;
+        case 'getLastCallTool': {
+          const body = this.session.getLastCallToolBlocks();
+          this.view?.webview.postMessage({
+            type: 'debugDialog',
+            kind: 'lastCallTool',
+            title: 'Last call-tool',
+            body: body || '(无 call-tool)',
+          });
+          break;
+        }
+        case 'executeLastCallTool':
+          await this.session.executeLastCallToolForce();
+          break;
+        case 'newChatSession':
+          await this.session.newChatSession();
+          break;
         case 'showLogin':
           await this.session.showLogin();
           break;
@@ -103,7 +130,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div id="tabs" class="tabs"></div>
       <div class="toolbar-actions">
         <button data-cmd="showLogin" title="打开登录窗">登录</button>
-        <button data-cmd="killTerminal" title="终止所有 run_powershell 进程">终止终端</button>
         <button data-cmd="openConfig" title="打开桥接脚本目录">配置</button>
         <button data-cmd="showPermissions" title="工具权限">权限</button>
         <button data-cmd="reload" title="重新加载">刷新</button>
@@ -117,11 +143,32 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div class="composer-actions">
         <button data-cmd="sendCurrentFile">当前文件</button>
         <button data-cmd="sendSelection">选区</button>
-        <button data-cmd="agentMode">Agent 模式</button>
+        <button data-cmd="newChatSession" title="开启新会话并注入 Agent 模式提示词">新会话</button>
+        <div class="debug-tools-wrap">
+          <button type="button" id="debugToolsBtn" title="调试工具">调试工具</button>
+          <div id="debugMenu" class="debug-menu hidden" role="menu">
+            <button type="button" data-debug="agentModePrompt" role="menuitem">Agent mode promet</button>
+            <button type="button" data-debug="lastCallTool" role="menuitem">Last call-tool</button>
+            <button type="button" data-debug="stopTerminal" role="menuitem">Stop Terminal</button>
+          </div>
+        </div>
         <button id="sendBtn" class="primary">发送</button>
       </div>
     </div>
     <div id="logs" class="logs"></div>
+  </div>
+  <div id="debugOverlay" class="debug-overlay hidden" role="dialog" aria-modal="true">
+    <div class="debug-dialog">
+      <div class="debug-dialog-header">
+        <h2 id="debugDialogTitle"></h2>
+        <button type="button" id="debugDialogCloseX" aria-label="关闭">×</button>
+      </div>
+      <pre id="debugDialogBody" class="debug-dialog-body"></pre>
+      <div class="debug-dialog-footer">
+        <button type="button" id="debugDialogClose">Close</button>
+        <button type="button" id="debugDialogPrimary" class="primary">Send</button>
+      </div>
+    </div>
   </div>
   <script nonce="${nonce}" src="${markedJs}"></script>
   <script nonce="${nonce}" src="${js}"></script>

@@ -30,10 +30,16 @@ export interface AgentConfig {
   inputMode?: AgentInputMode;
   typeDelayMs?: number;
   typeStrategy?: AgentTypeStrategy;
-  /** 从 *-bridge.js 的 READ_FILE_LINE_LIMIT 解析；未声明则无上限 */
+  /** 点击发送后等待毫秒；未设置按 300。未 loading 且会话 key 未变则重试。头注释 @waitBeforeSend */
+  waitBeforeSend?: number;
+  /** 头注释 @newChatOnload；true 时页面 composer 就绪后通知 Host 注入 Agent 模式提示词。默认 false。有 newChatSession 则先调用 */
+  newChatOnload?: boolean;
+  /** 头注释 @readFileLineLimit；未声明则无上限 */
   readFileLineLimit?: number;
-  /** 从 *-bridge.js 的 WRITE_FILE_LINE_LIMIT 解析；提示用，工具侧不强制 */
+  /** 头注释 @writeFileLineLimit；提示用，工具侧不强制 */
   writeFileLineLimit?: number;
+  /** 从 *-bridge.js 的 SITE_AGENT_PROMPT 解析；注入 Agent 模式提示词末尾 */
+  siteAgentPrompt?: string;
 }
 
 export interface AgentsConfig {

@@ -14,11 +14,14 @@ type BridgeCommHandler = (
   content: string
 ) => void | Promise<void>;
 
+type NewChatOnloadHandler = (agentId: string) => void | Promise<void>;
+
 export class AgentHostBridge implements IAgentBridge {
   private statuses = new Map<string, AgentStatus>();
   private responseHandler?: ResponseHandler;
   private chatHandler?: ChatHandler;
   private bridgeCommHandler?: BridgeCommHandler;
+  private newChatOnloadHandler?: NewChatOnloadHandler;
   private eventCursor = 0;
   private polling = false;
   private stopPoll = false;
@@ -82,6 +85,13 @@ export class AgentHostBridge implements IAgentBridge {
       }
       return;
     }
+    if (type === 'newChatOnloadAgentMode') {
+      const agentId = String(ev.agentId || '');
+      if (agentId && this.newChatOnloadHandler) {
+        await this.newChatOnloadHandler(agentId);
+      }
+      return;
+    }
     if (type === 'agentClosed') {
       const agentId = String(ev.agentId || '');
       if (agentId) this.created.delete(agentId);
@@ -101,6 +111,10 @@ export class AgentHostBridge implements IAgentBridge {
     if (agent.inputMode) bridgeConfig.inputMode = agent.inputMode;
     if (agent.typeDelayMs != null) bridgeConfig.typeDelayMs = agent.typeDelayMs;
     if (agent.typeStrategy) bridgeConfig.typeStrategy = agent.typeStrategy;
+    if (agent.waitBeforeSend != null) bridgeConfig.waitBeforeSend = agent.waitBeforeSend;
+    if (agent.newChatOnload != null) bridgeConfig.newChatOnload = agent.newChatOnload;
+    if (agent.readFileLineLimit != null) bridgeConfig.readFileLineLimit = agent.readFileLineLimit;
+    if (agent.writeFileLineLimit != null) bridgeConfig.writeFileLineLimit = agent.writeFileLineLimit;
 
     await this.host.request('POST', '/agents/create', {
       agentId: agent.id,
@@ -141,6 +155,10 @@ export class AgentHostBridge implements IAgentBridge {
     await this.host.request('POST', '/agents/fill', { agentId, text });
   }
 
+  async newChatSession(agentId: string): Promise<void> {
+    await this.host.request('POST', '/agents/new-chat', { agentId });
+  }
+
   async isLoading(agentId: string): Promise<boolean> {
     try {
       const res = (await this.host.request('GET', `/agents/loading?agentId=${encodeURIComponent(agentId)}`)) as {
@@ -162,6 +180,10 @@ export class AgentHostBridge implements IAgentBridge {
 
   onBridgeComm(callback: BridgeCommHandler): void {
     this.bridgeCommHandler = callback;
+  }
+
+  onNewChatOnloadAgentMode(callback: NewChatOnloadHandler): void {
+    this.newChatOnloadHandler = callback;
   }
 
   getStatus(agentId: string): AgentStatus {

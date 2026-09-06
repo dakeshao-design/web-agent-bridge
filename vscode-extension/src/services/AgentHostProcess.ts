@@ -59,14 +59,8 @@ export class AgentHostProcess {
 
       const releaseDir = path.join(cwd, 'src-tauri', 'target', 'release');
       const debugDir = path.join(cwd, 'src-tauri', 'target', 'debug');
-      const releaseExe =
-        [path.join(releaseDir, 'WABEditor.exe'), path.join(releaseDir, 'editor-app.exe')].find(
-          (p) => fs.existsSync(p)
-        ) ?? path.join(releaseDir, 'editor-app.exe');
-      const debugExe =
-        [path.join(debugDir, 'WABEditor.exe'), path.join(debugDir, 'editor-app.exe')].find((p) =>
-          fs.existsSync(p)
-        ) ?? path.join(debugDir, 'editor-app.exe');
+      const releaseExe = path.join(releaseDir, 'WABEditor.exe');
+      const debugExe = path.join(debugDir, 'WABEditor.exe');
       const bundledExe = path.join(this.context.extensionPath, 'bin', 'agent-host.exe');
 
       let command: string;

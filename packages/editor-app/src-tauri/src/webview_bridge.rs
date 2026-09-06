@@ -28,7 +28,15 @@ const BRIDGE_DRAIN_CHAT_EXPR: &str = r#"(function(){try{if(!window.__agentEditor
 
 const BRIDGE_TAKE_RESET_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.takePendingResetBaseline)return "false";return window.__agentEditorBridge.takePendingResetBaseline()?"true":"false";}catch(e){return "false";}})()"#;
 
-const DEBUG_DOM_EXPR: &str = r#"(function(){try{var items=document.querySelectorAll('[data-virtual-list-item-key]');var sample=[];for(var i=0;i<items.length;i++){var item=items[i];sample.push({key:item.getAttribute('data-virtual-list-item-key'),html:item.outerHTML.substring(0,1500)});}var input=null;var inputText='';try{var list=document.querySelectorAll('[contenteditable="true"], textarea');var best=null;var maxY=-1;for(var i=0;i<list.length;i++){var el=list[i];var r=el.getBoundingClientRect();if(r.width>0&&r.height>0&&r.bottom>maxY){maxY=r.bottom;best=el;}}input=best;inputText=input?String(input.innerText||input.value||'').trim().substring(0,200):'';}catch(e){}var sendBtn=null;var sendDisabled=null;try{var btns=document.querySelectorAll('button');for(var j=btns.length-1;j>=0;j--){var b=btns[j];if(b.offsetParent===null)continue;var label=(b.getAttribute('aria-label')||'')+(b.textContent||'');if(/发送|send/i.test(label)){sendBtn=label.trim().substring(0,80);sendDisabled=!!b.disabled;break;}}}catch(e){}var bodyText=document.body?String(document.body.innerText||'').trim().substring(0,500):'';return{url:location.href,bridge:Boolean(window.__agentEditorBridge),virtualItemCount:items.length,title:document.title,bodyLength:document.body?document.body.innerHTML.length:0,sampleItems:sample,inputText:inputText,sendBtn:sendBtn,sendDisabled:sendDisabled,bodyText:bodyText};}catch(e){return{error:String(e)};}})()"#;
+const BRIDGE_TAKE_NEWCHAT_ONLOAD_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.takePendingNewChatOnloadAgentMode)return "false";return window.__agentEditorBridge.takePendingNewChatOnloadAgentMode()?"true":"false";}catch(e){return "false";}})()"#;
+
+const BRIDGE_COMPOSER_READY_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.getComposer)return false;var c=window.__agentEditorBridge.getComposer();return !!(c&&c.input);}catch(e){return false;}})()"#;
+
+const BRIDGE_START_NEW_CHAT_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.startNewChatSession)return JSON.stringify({ok:false,error:"no bridge"});return JSON.stringify(window.__agentEditorBridge.startNewChatSession());}catch(e){return JSON.stringify({ok:false,error:String(e)});}})()"#;
+
+const BRIDGE_POLL_NEW_CHAT_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.pollNewChatSessionStatus)return JSON.stringify({status:"done",ok:false,error:"no bridge"});return JSON.stringify(window.__agentEditorBridge.pollNewChatSessionStatus());}catch(e){return JSON.stringify({status:"done",ok:false,error:String(e)});}})()"#;
+
+const DEBUG_DOM_EXPR: &str = r#"(function(){try{var items=document.querySelectorAll('[data-virtual-list-item-key]');var sample=[];for(var i=0;i<Math.min(items.length,5);i++){var item=items[i];sample.push({key:item.getAttribute('data-virtual-list-item-key'),html:item.outerHTML.substring(0,800)});}var input=null;var inputText='';var inputHtml='';var inputTag='';try{var list=document.querySelectorAll('[contenteditable="true"], textarea');var best=null;var maxY=-1;for(var i=0;i<list.length;i++){var el=list[i];var r=el.getBoundingClientRect();if(r.width>0&&r.height>0&&r.bottom>maxY){maxY=r.bottom;best=el;}}input=best;if(input){inputTag=input.tagName;inputText=String(input.innerText||input.value||'').trim();inputHtml=String(input.innerHTML||'').substring(0,2000);}}catch(e){}var sendBtn=null;var sendDisabled=null;try{var btns=document.querySelectorAll('button');for(var j=btns.length-1;j>=0;j--){var b=btns[j];if(b.offsetParent===null)continue;var label=(b.getAttribute('aria-label')||'')+(b.textContent||'');if(/发送|send/i.test(label)){sendBtn=label.trim().substring(0,80);sendDisabled=!!b.disabled;break;}}}catch(e){}var main=document.querySelector('main')||document.body;var mainText=main?String(main.innerText||'').trim():'';var bodyText=document.body?String(document.body.innerText||'').trim():'';var unsupported=[];var all=document.querySelectorAll('main *, [class*="toast"], [class*="message"], [class*="tip"], [class*="error"], [role="alert"]');for(var k=0;k<all.length;k++){var node=all[k];var t=(node.innerText||node.textContent||'').trim();if(!t||t.length>80)continue;if(t.indexOf('暂不支持该消息类型')===-1)continue;var r=node.getBoundingClientRect();unsupported.push({text:t,tag:node.tagName,cls:String(node.className||'').slice(0,120),w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.left),y:Math.round(r.top)});}var bridgeInput='';var bridgeMode='';try{if(window.__agentEditorBridge){if(window.__agentEditorBridge.getComposer){var c=window.__agentEditorBridge.getComposer();if(c&&c.input){bridgeInput=String(c.input.innerText||c.input.value||'').trim();}}bridgeMode=String((window.__agentEditorBridge._debugState&&window.__agentEditorBridge._debugState())||'');}}catch(e){}var lastRows=[];try{var rows=document.querySelectorAll('main [class*="message-list"] [data-message-id]');for(var ri=Math.max(0,rows.length-4);ri<rows.length;ri++){var row=rows[ri];lastRows.push({id:row.getAttribute('data-message-id'),cls:String(row.className||'').slice(0,100),text:String(row.innerText||'').trim().substring(0,300)});}}catch(e){}return{url:location.href,bridge:Boolean(window.__agentEditorBridge),virtualItemCount:items.length,title:document.title,inputTag:inputTag,inputText:inputText,inputTextLen:inputText.length,inputHtml:inputHtml,bridgeInput:bridgeInput,bridgeInputLen:bridgeInput.length,hasComposerInput:(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.getComposer)return false;var c=window.__agentEditorBridge.getComposer();return !!(c&&c.input);}catch(e){return false;}})(),newChatOnloadDebug:(function(){try{if(!window.__agentEditorBridge||!window.__agentEditorBridge.getNewChatOnloadDebug)return null;return window.__agentEditorBridge.getNewChatOnloadDebug();}catch(e){return{error:String(e)};}})(),bridgeMode:bridgeMode,sendBtn:sendBtn,sendDisabled:sendDisabled,unsupported:unsupported,unsupportedCount:unsupported.length,lastRows:lastRows,mainTextTail:mainText.slice(-1200),bodyTextTail:bodyText.slice(-800)};}catch(e){return{error:String(e)};}})()"#;
 
 const AGENT_INSPECT_EXPR: &str = r#"(function(){try{var inputs=[];document.querySelectorAll('textarea,[contenteditable="true"],[role="textbox"]').forEach(function(el){var r=el.getBoundingClientRect();inputs.push({tag:el.tagName,ph:(el.placeholder||'').slice(0,40),w:Math.round(r.width),h:Math.round(r.height),b:Math.round(r.bottom),cls:String(el.className||'').slice(0,80)});});var btns=[];document.querySelectorAll('button,[role="button"]').forEach(function(b){if(b.offsetParent===null)return;var label=((b.getAttribute('aria-label')||'')+(b.textContent||'')).trim().slice(0,50);if(/发送|send|submit|提交/i.test(label)||b.type==='submit')btns.push({label:label,disabled:!!b.disabled,cls:String(b.className||'').slice(0,80)});});var blocks=[];document.querySelectorAll('[class*="dialog"] [class*="item"],[class*="message"],[class*="chat"],[class*="answer"],[class*="markdown"],[class*="bubble"]').forEach(function(el,i){var t=(el.innerText||'').trim();if(t.length>15&&t.length<2000)blocks.push({i:i,len:t.length,preview:t.slice(0,120),cls:String(el.className||'').slice(0,80)});});return{inputCount:inputs.length,inputs:inputs.slice(-8),btns:btns.slice(-10),blocks:blocks.slice(-8)};}catch(e){return{error:String(e)};}})()"#;
 
@@ -41,6 +49,8 @@ pub struct WebviewState {
     sync_states: Mutex<HashMap<String, AgentSyncState>>,
     pub active_syncs: Mutex<HashSet<String>>,
     pub visible_labels: Mutex<HashSet<String>>,
+    /// Host 静默屏外窗：抢焦点时再钉回屏外
+    pub silent_labels: Mutex<HashSet<String>>,
     eval_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -55,6 +65,7 @@ impl Default for WebviewState {
             sync_states: Mutex::new(HashMap::new()),
             active_syncs: Mutex::new(HashSet::new()),
             visible_labels: Mutex::new(HashSet::new()),
+            silent_labels: Mutex::new(HashSet::new()),
             eval_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -91,6 +102,40 @@ fn agent_webview_alive(app: &AppHandle, label: &str) -> bool {
     }
 }
 
+/// Host 静默：屏外 show，避免 win.hide 触发 WebView2 节流导致无回复
+fn place_host_window_silent(win: &tauri::WebviewWindow) -> Result<(), String> {
+    let _ = win.set_skip_taskbar(true);
+    // 保持合理尺寸，避免部分站点在极小窗下停更
+    win.set_size(LogicalSize::new(960.0, 720.0))
+        .map_err(|e| e.to_string())?;
+    win.set_position(LogicalPosition::new(-32000.0, -32000.0))
+        .map_err(|e| e.to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    // show 后系统可能把窗拉回屏幕，再钉一次且不抢焦点
+    let _ = win.set_position(LogicalPosition::new(-32000.0, -32000.0));
+    Ok(())
+}
+
+fn mark_host_window_silent(app: &AppHandle, label: &str, silent: bool) {
+    let state = app.state::<WebviewState>();
+    if let Ok(mut labels) = state.silent_labels.lock() {
+        if silent {
+            labels.insert(label.to_string());
+        } else {
+            labels.remove(label);
+        }
+    };
+}
+
+fn is_host_window_silent(app: &AppHandle, label: &str) -> bool {
+    let state = app.state::<WebviewState>();
+    state
+        .silent_labels
+        .lock()
+        .map(|labels| labels.contains(label))
+        .unwrap_or(false)
+}
+
 fn mark_agent_webview_gone(app: &AppHandle, label: &str) {
     let state = app.state::<WebviewState>();
     if let Ok(mut webviews) = state.webviews.lock() {
@@ -98,6 +143,9 @@ fn mark_agent_webview_gone(app: &AppHandle, label: &str) {
     }
     if let Ok(mut visible) = state.visible_labels.lock() {
         visible.remove(label);
+    }
+    if let Ok(mut silent) = state.silent_labels.lock() {
+        silent.remove(label);
     }
     let agent_id = label
         .strip_prefix("agent-")
@@ -113,8 +161,19 @@ fn attach_host_window_close_cleanup(app: &AppHandle, window: &tauri::WebviewWind
     let app_for_event = app.clone();
     let label_for_event = label.to_string();
     window.on_window_event(move |event| {
-        if matches!(event, WindowEvent::Destroyed) {
-            mark_agent_webview_gone(&app_for_event, &label_for_event);
+        match event {
+            WindowEvent::Destroyed => {
+                mark_agent_webview_gone(&app_for_event, &label_for_event);
+            }
+            WindowEvent::Focused(true) => {
+                // 静默窗被站点抢焦点时钉回屏外
+                if is_host_window_silent(&app_for_event, &label_for_event) {
+                    if let Some(win) = app_for_event.get_webview_window(&label_for_event) {
+                        let _ = place_host_window_silent(&win);
+                    }
+                }
+            }
+            _ => {}
         }
     });
 }
@@ -550,8 +609,26 @@ fn flush_bridge_pending_reset(app: &AppHandle, label: &str, agent_id: &str) {
     }
 }
 
+fn emit_new_chat_onload_agent_mode(app: &AppHandle, agent_id: &str) {
+    let payload = serde_json::json!({ "agentId": agent_id });
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("new-chat-onload-agent-mode", payload);
+    } else {
+        let _ = app.emit("new-chat-onload-agent-mode", payload);
+    }
+}
+
+fn flush_bridge_new_chat_onload(app: &AppHandle, label: &str, agent_id: &str) {
+    let raw = eval_webview_json(app, label, BRIDGE_TAKE_NEWCHAT_ONLOAD_EXPR)
+        .unwrap_or_else(|_| "false".to_string());
+    if raw.trim() == "true" {
+        emit_new_chat_onload_agent_mode(app, agent_id);
+    }
+}
+
 fn flush_bridge_queues(app: &AppHandle, label: &str, agent_id: &str) {
     flush_bridge_pending_reset(app, label, agent_id);
+    flush_bridge_new_chat_onload(app, label, agent_id);
     flush_bridge_comm_logs(app, label, agent_id);
     flush_bridge_chat_messages(app, label, agent_id);
 }
@@ -1062,7 +1139,7 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
     loop {
         async_delay(poll_interval_ms).await;
 
-        if app.get_webview(&label).is_none() {
+        if !agent_webview_alive(&app, &label) {
             let state = app.state::<WebviewState>();
             if let Ok(mut active) = state.active_syncs.lock() {
                 active.remove(&label);
@@ -1070,15 +1147,16 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
             break;
         }
 
+        ensure_bridge_injected(&app, &label, &agent_id).await;
+        // 隐藏时也要 drain，否则 @newChatOnload 无法通知 Host
+        flush_bridge_queues(&app, &label, &agent_id);
+
         let state = app.state::<WebviewState>();
         if !is_webview_visible(&state, &label) {
             continue;
         }
 
-        ensure_bridge_injected(&app, &label, &agent_id).await;
-
         let _ = eval_webview_json(&app, &label, BRIDGE_SCHEDULE_COPY_EXPR);
-        flush_bridge_queues(&app, &label, &agent_id);
 
         let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
         let snap = parse_poll_snapshot(&raw);
@@ -1096,7 +1174,7 @@ fn start_bridge_response_watch(app: &AppHandle, label: String, agent_id: String)
         let poll_ms = 1000u64;
         for _ in 0..225 {
             async_delay(poll_ms).await;
-            if app.get_webview(&label).is_none() {
+            if !agent_webview_alive(&app, &label) {
                 break;
             }
             let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
@@ -1266,6 +1344,10 @@ pub async fn create_agent_webview(
     if (cfg.inputMode) msg.inputMode = cfg.inputMode;
     if (cfg.typeDelayMs != null) msg.typeDelayMs = cfg.typeDelayMs;
     if (cfg.typeStrategy) msg.typeStrategy = cfg.typeStrategy;
+    if (cfg.waitBeforeSend != null) msg.waitBeforeSend = cfg.waitBeforeSend;
+    if (cfg.newChatOnload != null) msg.newChatOnload = cfg.newChatOnload;
+    if (cfg.readFileLineLimit != null) msg.readFileLineLimit = cfg.readFileLineLimit;
+    if (cfg.writeFileLineLimit != null) msg.writeFileLineLimit = cfg.writeFileLineLimit;
   }}
   window.__agentEditorBridge.onEditorMessage(msg);
   window.__agentEditorBridge.onEditorMessage({{ type: 'config', agentId: '{agent_id}' }});
@@ -1324,7 +1406,9 @@ pub async fn create_agent_webview(
                 });
             }
             attach_host_window_close_cleanup(&app_for_create, &window, &label_for_create);
-            let _ = window.hide();
+            // 屏外显示以保持页面活跃，勿 hide（否则闪一下且脚本被节流）
+            place_host_window_silent(&window)?;
+            mark_host_window_silent(&app_for_create, &label_for_create, true);
             Ok(())
         })?;
     } else {
@@ -1376,7 +1460,12 @@ pub async fn create_agent_webview(
     }
 
     let mut webviews = state.webviews.lock().map_err(|e| e.to_string())?;
-    webviews.insert(label, true);
+    webviews.insert(label.clone(), true);
+    drop(webviews);
+
+    if crate::is_agent_host_mode() {
+        start_conversation_sync(&app, label, agent_id);
+    }
 
     Ok(())
 }
@@ -1417,8 +1506,10 @@ pub async fn show_agent_webview(
             win.set_size(LogicalSize::new(width, height))
                 .map_err(|e| e.to_string())?;
             let _ = win.center();
+            let _ = win.set_skip_taskbar(false);
             win.show().map_err(|e| e.to_string())?;
             let _ = win.set_focus();
+            mark_host_window_silent(&app_for_ui, &label_for_ui, false);
         } else {
             let webview = app_for_ui
                 .get_webview(&label_for_ui)
@@ -1454,7 +1545,9 @@ pub async fn hide_agent_webview(app: AppHandle, label: String) -> Result<(), Str
     run_on_main_thread_sync(&app, move || {
         if crate::is_agent_host_mode() {
             if let Some(win) = app_for_ui.get_webview_window(&label_for_ui) {
-                win.hide().map_err(|e| e.to_string())?;
+                // 勿 hide：屏外静默，保持 WebView2 脚本可跑
+                place_host_window_silent(&win)?;
+                mark_host_window_silent(&app_for_ui, &label_for_ui, true);
             }
         } else if let Some(webview) = app_for_ui.get_webview(&label_for_ui) {
             webview.hide().map_err(|e| e.to_string())?;
@@ -1512,6 +1605,71 @@ if (window.__agentEditorBridge) {{
     webview.eval(&script).map_err(|e| e.to_string())?;
     reset_bridge_baseline_on_send(&app, &label, &agent_id);
     start_bridge_response_watch(&app, label, agent_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn click_agent_send(app: AppHandle, agent_id: String) -> Result<(), String> {
+    let label = format!("agent-{}", agent_id);
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview not found: {}", label))?;
+    let script = r#"
+(function(){
+  try {
+    if (!window.__agentEditorBridge) return;
+    var fn = window.__agentEditorBridge.clickSendWithRetry || window.__agentEditorBridge.clickSend;
+    if (typeof fn === 'function') Promise.resolve(fn.call(window.__agentEditorBridge));
+  } catch (e) {}
+})();
+"#;
+    webview.eval(script).map_err(|e| e.to_string())?;
+    reset_bridge_baseline_on_send(&app, &label, &agent_id);
+    start_bridge_response_watch(&app, label, agent_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn push_agent_bridge_config(
+    app: AppHandle,
+    agent_id: String,
+    input_mode: Option<String>,
+    type_strategy: Option<String>,
+    wait_before_send: Option<i64>,
+) -> Result<(), String> {
+    let label = format!("agent-{}", agent_id);
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview not found: {}", label))?;
+    let input_mode_js = match input_mode.as_deref() {
+        Some("type") | Some("fill") => format!(r#", inputMode: "{}""#, input_mode.as_ref().unwrap()),
+        _ => String::new(),
+    };
+    let type_strategy_js = match type_strategy.as_deref() {
+        Some("keyboard") | Some("exec") | Some("paste") => {
+            format!(r#", typeStrategy: "{}""#, type_strategy.as_ref().unwrap())
+        }
+        _ => String::new(),
+    };
+    let wait_js = match wait_before_send {
+        Some(n) if n >= 0 => format!(", waitBeforeSend: {}", n),
+        _ => String::new(),
+    };
+    let script = format!(
+        r#"
+if (window.__agentEditorBridge) {{
+  window.__agentEditorBridge.onEditorMessage({{
+    type: 'config',
+    agentId: '{agent_id}'{input_mode_js}{type_strategy_js}{wait_js}
+  }});
+}}
+"#,
+        agent_id = agent_id,
+        input_mode_js = input_mode_js,
+        type_strategy_js = type_strategy_js,
+        wait_js = wait_js
+    );
+    webview.eval(&script).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1579,6 +1737,59 @@ pub async fn reset_agent_bridge_tracking(
     let label = format!("agent-{}", agent_id);
     reset_bridge_baseline_on_send(&app, &label, &agent_id);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn agent_composer_ready(app: AppHandle, agent_id: String) -> Result<bool, String> {
+    let label = format!("agent-{}", agent_id);
+    Ok(debug_eval_composer_ready(&app, &label))
+}
+
+pub fn debug_eval_composer_ready(app: &AppHandle, label: &str) -> bool {
+    let raw =
+        eval_webview_json(app, label, BRIDGE_COMPOSER_READY_EXPR).unwrap_or_else(|_| "false".to_string());
+    raw.trim() == "true"
+}
+
+#[tauri::command]
+pub async fn new_agent_chat_session(app: AppHandle, agent_id: String) -> Result<(), String> {
+    let label = format!("agent-{}", agent_id);
+    let start_raw = eval_webview_json(&app, &label, BRIDGE_START_NEW_CHAT_EXPR)?;
+    // WebView2 回传可能多层 JSON 字符串，需 deep parse
+    let start = parse_json_value_deep(&start_raw).unwrap_or_else(|| json!({ "ok": false }));
+    if start.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        let err = start
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("failed to start newChatSession");
+        return Err(err.to_string());
+    }
+
+    // 最长约 90s，等待站点打开新会话
+    for _ in 0..450 {
+        async_delay(200).await;
+        let poll_raw =
+            eval_webview_json(&app, &label, BRIDGE_POLL_NEW_CHAT_EXPR).unwrap_or_default();
+        let poll =
+            parse_json_value_deep(&poll_raw).unwrap_or_else(|| json!({ "status": "running" }));
+        let status = poll.get("status").and_then(|v| v.as_str()).unwrap_or("running");
+        if status == "running" {
+            continue;
+        }
+        if status == "idle" {
+            return Err("newChatSession status lost".into());
+        }
+        if poll.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+            reset_bridge_baseline_on_send(&app, &label, &agent_id);
+            return Ok(());
+        }
+        let err = poll
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("newChatSession failed");
+        return Err(err.to_string());
+    }
+    Err("newChatSession timeout".into())
 }
 
 #[tauri::command]
@@ -1683,10 +1894,8 @@ pub fn debug_query_agent(app: &AppHandle, agent_id: &str) -> Result<serde_json::
     let messages = messages_from_snapshot(&snap);
     let dom_raw = eval_webview_json(app, &label, DEBUG_DOM_EXPR).unwrap_or_default();
     let inspect_raw = eval_webview_json(app, &label, AGENT_INSPECT_EXPR).unwrap_or_default();
-    let dom_value = serde_json::from_str::<serde_json::Value>(&dom_raw)
-        .unwrap_or(serde_json::Value::String(dom_raw));
-    let inspect_value = serde_json::from_str::<serde_json::Value>(&inspect_raw)
-        .unwrap_or(serde_json::Value::String(inspect_raw));
+    let dom_value = parse_json_value_deep(&dom_raw).unwrap_or(serde_json::Value::Null);
+    let inspect_value = parse_json_value_deep(&inspect_raw).unwrap_or(serde_json::Value::Null);
     let virtual_item_count = dom_value
         .get("virtualItemCount")
         .and_then(|value| value.as_i64())

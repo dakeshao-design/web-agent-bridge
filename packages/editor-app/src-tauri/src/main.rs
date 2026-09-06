@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    editor_app_lib::run();
+    wab_editor_lib::run();
 }

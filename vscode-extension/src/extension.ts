@@ -49,6 +49,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('webAgentBridge.sendCurrentFile', () => session?.sendCurrentFile());
   register('webAgentBridge.sendSelection', () => session?.sendSelection());
   register('webAgentBridge.sendAgentMode', () => session?.sendAgentMode());
+  register('webAgentBridge.newChatSession', () => session?.newChatSession());
   register('webAgentBridge.showLogin', () => session?.showLogin());
   register('webAgentBridge.reloadAgents', () => session?.reloadAgents());
 

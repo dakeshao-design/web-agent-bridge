@@ -6,8 +6,17 @@
   const inputEl = document.getElementById('input');
   const hostStatusEl = document.getElementById('hostStatus');
   const permissionsEl = document.getElementById('permissions');
+  const debugToolsBtn = document.getElementById('debugToolsBtn');
+  const debugMenu = document.getElementById('debugMenu');
+  const debugOverlay = document.getElementById('debugOverlay');
+  const debugDialogTitle = document.getElementById('debugDialogTitle');
+  const debugDialogBody = document.getElementById('debugDialogBody');
+  const debugDialogPrimary = document.getElementById('debugDialogPrimary');
+  const debugDialogClose = document.getElementById('debugDialogClose');
+  const debugDialogCloseX = document.getElementById('debugDialogCloseX');
   let showPermissions = false;
   let lastSnapshot = null;
+  let debugDialogKind = null;
 
   if (typeof marked !== 'undefined') {
     marked.setOptions({
@@ -62,6 +71,28 @@
     }
   }
 
+  function setDebugMenuOpen(open) {
+    if (!debugMenu) return;
+    if (open) debugMenu.classList.remove('hidden');
+    else debugMenu.classList.add('hidden');
+  }
+
+  function closeDebugDialog() {
+    debugDialogKind = null;
+    if (debugOverlay) debugOverlay.classList.add('hidden');
+  }
+
+  function openDebugDialog(kind, title, body) {
+    debugDialogKind = kind;
+    if (debugDialogTitle) debugDialogTitle.textContent = title || '';
+    if (debugDialogBody) debugDialogBody.textContent = body || '(空)';
+    if (debugDialogPrimary) {
+      debugDialogPrimary.textContent = kind === 'lastCallTool' ? 'execute' : 'Send';
+      debugDialogPrimary.disabled = kind === 'lastCallTool' && body === '(无 call-tool)';
+    }
+    if (debugOverlay) debugOverlay.classList.remove('hidden');
+  }
+
   document.querySelectorAll('[data-cmd]').forEach(function (btn) {
     btn.addEventListener('click', function () {
       const cmd = btn.getAttribute('data-cmd');
@@ -73,6 +104,47 @@
       post(cmd);
     });
   });
+
+  if (debugToolsBtn) {
+    debugToolsBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const open = debugMenu && debugMenu.classList.contains('hidden');
+      setDebugMenuOpen(!!open);
+    });
+  }
+
+  if (debugMenu) {
+    debugMenu.querySelectorAll('[data-debug]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const action = btn.getAttribute('data-debug');
+        setDebugMenuOpen(false);
+        if (action === 'agentModePrompt') post('getAgentModePrompt');
+        else if (action === 'lastCallTool') post('getLastCallTool');
+        else if (action === 'stopTerminal') post('killTerminal');
+      });
+    });
+  }
+
+  document.addEventListener('click', function () {
+    setDebugMenuOpen(false);
+  });
+
+  if (debugDialogClose) {
+    debugDialogClose.addEventListener('click', closeDebugDialog);
+  }
+  if (debugDialogCloseX) {
+    debugDialogCloseX.addEventListener('click', closeDebugDialog);
+  }
+  if (debugDialogPrimary) {
+    debugDialogPrimary.addEventListener('click', function () {
+      if (!debugDialogKind) return;
+      const kind = debugDialogKind;
+      debugDialogKind = null;
+      if (debugOverlay) debugOverlay.classList.add('hidden');
+      if (kind === 'agentMode') post('sendAgentModePrompt');
+      else post('executeLastCallTool');
+    });
+  }
 
   document.getElementById('sendBtn').addEventListener('click', function () {
     const text = inputEl.value;
@@ -232,6 +304,9 @@
     if (msg && msg.type === 'togglePermissions') {
       showPermissions = !!msg.show;
       if (lastSnapshot) render(lastSnapshot);
+    }
+    if (msg && msg.type === 'debugDialog') {
+      openDebugDialog(msg.kind, msg.title, msg.body);
     }
   });
 

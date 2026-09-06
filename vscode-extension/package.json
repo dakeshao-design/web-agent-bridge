@@ -65,6 +65,10 @@
         "title": "WAB: Enable Agent Mode"
       },
       {
+        "command": "webAgentBridge.newChatSession",
+        "title": "WAB: New Chat Session"
+      },
+      {
         "command": "webAgentBridge.showLogin",
         "title": "WAB: Show Login Window"
       },

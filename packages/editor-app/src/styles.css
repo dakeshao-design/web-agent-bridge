@@ -513,10 +513,24 @@ body {
   flex-shrink: 0;
 }
 
+.file-op-log.embedded {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+  border-top: none;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
 .file-op-log.empty {
   padding: 8px 12px;
   color: #666;
   font-size: 11px;
+}
+
+.file-op-log.empty.embedded {
+  border-top: none;
+  max-height: none;
 }
 
 .file-op-log-header {
@@ -528,6 +542,8 @@ body {
 
 .file-op-log-list {
   list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .file-op-entry {
@@ -536,6 +552,23 @@ body {
   padding: 3px 12px;
   font-size: 11px;
   border-bottom: 1px solid #2d2d2d;
+  align-items: baseline;
+}
+
+.file-op-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-op-message {
+  color: #888;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-op-entry.status-applied {
@@ -554,6 +587,7 @@ body {
   color: #dcdcaa;
 }
 
+.bottom-panel,
 .chat-log-panel {
   height: 200px;
   min-height: 120px;
@@ -565,6 +599,7 @@ body {
   flex-shrink: 0;
 }
 
+.bottom-panel-header,
 .chat-log-header {
   display: flex;
   align-items: center;
@@ -575,11 +610,146 @@ body {
   flex-shrink: 0;
 }
 
+.bottom-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.bottom-panel-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #888;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bottom-panel-tab:hover {
+  color: #ddd;
+  background: #3a3a3a;
+}
+
+.bottom-panel-tab.active {
+  color: #fff;
+  background: #1e1e1e;
+}
+
+.bottom-panel-tab-badge {
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: #0e639c;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+
+.bottom-panel-spacer {
+  flex: 1;
+  min-width: 0;
+}
+
 .chat-log-title {
   font-size: 11px;
   font-weight: 600;
   color: #bbb;
   white-space: nowrap;
+}
+
+.powershell-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.powershell-entry {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #252526;
+  border-left: 3px solid #6a9955;
+}
+
+.powershell-entry.is-running {
+  border-left-color: #4fc1ff;
+}
+
+.powershell-entry-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: #888;
+}
+
+.powershell-entry-agent {
+  color: #9cdcfe;
+}
+
+.powershell-entry-status.running {
+  color: #4fc1ff;
+}
+
+.powershell-entry-status.ok {
+  color: #6a9955;
+}
+
+.powershell-entry-status.fail {
+  color: #f48771;
+}
+
+.powershell-entry-cmd {
+  margin: 0;
+  padding: 4px 6px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #dcdcaa;
+  background: #1e1e1e;
+  border-radius: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.powershell-entry-console {
+  margin: 4px 0 0;
+  padding: 6px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #d4d4d4;
+  background: #1a1a1a;
+  border-radius: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.powershell-entry-exit {
+  margin-top: 4px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 10px;
+}
+
+.powershell-entry-exit.ok {
+  color: #6a9955;
+}
+
+.powershell-entry-exit.fail {
+  color: #f48771;
 }
 
 .chat-log-file {
@@ -647,10 +817,6 @@ body {
   border-left-color: #ce9178;
 }
 
-.chat-log-entry.role-shell {
-  border-left-color: #6a9955;
-}
-
 .chat-log-meta {
   display: flex;
   gap: 8px;
@@ -684,71 +850,12 @@ body {
   color: #ce9178;
 }
 
-.chat-log-entry.role-shell .chat-log-role {
-  color: #6a9955;
-}
-
 .chat-log-agent {
   color: #9cdcfe;
 }
 
 .chat-log-source {
   color: #ce9178;
-}
-
-.chat-log-shell-status.ok {
-  color: #6a9955;
-}
-
-.chat-log-shell-status.fail {
-  color: #f48771;
-}
-
-.chat-log-shell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.chat-log-shell-cmd {
-  margin: 0;
-  padding: 4px 6px;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 11px;
-  line-height: 1.4;
-  color: #dcdcaa;
-  background: #1e1e1e;
-  border-radius: 2px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.chat-log-shell-console {
-  margin: 0;
-  padding: 6px;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 11px;
-  line-height: 1.4;
-  color: #d4d4d4;
-  background: #1a1a1a;
-  border-radius: 2px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.chat-log-shell-exit {
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 10px;
-}
-
-.chat-log-shell-exit.ok {
-  color: #6a9955;
-}
-
-.chat-log-shell-exit.fail {
-  color: #f48771;
 }
 
 .chat-log-content {
@@ -894,4 +1001,26 @@ body {
 .settings-footer button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.debug-tools-dialog {
+  width: min(720px, 94vw);
+}
+
+.debug-tools-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px;
+  min-height: 200px;
+  max-height: 60vh;
+}
+
+.debug-tools-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #d4d4d4;
 }

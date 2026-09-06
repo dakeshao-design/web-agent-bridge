@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { EditorSelection, EditorState } from '@codemirror/state';
+import { Annotation, EditorSelection, EditorState } from '@codemirror/state';
 import {
   EditorView,
   keymap,
@@ -45,6 +45,9 @@ export type EditorSelectionInfo = {
   startLine: number;
   endLine: number;
 };
+
+/** 外部同步产生的变更不触发 onChange */
+const externalSyncAnnotation = Annotation.define<boolean>();
 
 function getLanguageExtension(filePath: string | null) {
   if (!filePath) return [];
@@ -139,7 +142,10 @@ export function Editor({
       EditorState.tabSize.of(tabSize),
       EditorView.lineWrapping,
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) {
+        if (
+          update.docChanged &&
+          !update.transactions.some((tr) => tr.annotation(externalSyncAnnotation))
+        ) {
           onChange(update.state.doc.toString());
         }
         if (update.selectionSet && onSelectionChange) {
@@ -175,6 +181,7 @@ export function Editor({
     if (current !== content) {
       view.dispatch({
         changes: { from: 0, to: current.length, insert: content },
+        annotations: externalSyncAnnotation.of(true),
       });
     }
   }, [content]);

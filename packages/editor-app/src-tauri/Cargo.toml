@@ -1,12 +1,12 @@
 [package]
-name = "editor-app"
+name = "WABEditor"
 version = "0.1.0"
 description = "WABEditor desktop code editor"
 authors = ["WebAgent"]
 edition = "2021"
 
 [lib]
-name = "editor_app_lib"
+name = "wab_editor_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]

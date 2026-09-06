@@ -9,7 +9,7 @@ use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::webview_bridge::{
     agent_bridge_is_loading, create_agent_webview, fill_agent_message, hide_agent_webview,
-    send_agent_message, show_agent_webview, WebviewBounds, WebviewState,
+    new_agent_chat_session, send_agent_message, show_agent_webview, WebviewBounds, WebviewState,
 };
 
 const DEFAULT_PORT: &str = "9791";
@@ -115,6 +115,21 @@ pub fn start_host_server(app: AppHandle) {
                 }
             }
             bus_comm.push(wrapped);
+        }
+    });
+
+    let bus_onload = bus.clone();
+    app.listen("new-chat-onload-agent-mode", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let mut wrapped = json!({ "type": "newChatOnloadAgentMode" });
+            if let Some(obj) = wrapped.as_object_mut() {
+                if let Some(p) = payload.as_object() {
+                    for (k, v) in p {
+                        obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            bus_onload.push(wrapped);
         }
     });
 
@@ -243,10 +258,9 @@ fn handle(
                     bridge_config,
                 )
                 .await?;
-                // 启动会话同步；静默时再 hide
-                show_agent_webview(app2.clone(), label.clone(), bounds).await?;
-                if hidden {
-                    hide_agent_webview(app2, label).await?;
+                // hidden：create 已屏外静默 + 启动同步，勿再 show/hide 闪窗
+                if !hidden {
+                    show_agent_webview(app2, label, bounds).await?;
                 }
                 Ok::<(), String>(())
             });
@@ -324,6 +338,18 @@ fn handle(
                 agent_bridge_is_loading(app2, agent_id).await
             })?;
             json_ok(json!({ "ok": true, "loading": loading }))
+        }
+        (Method::Post, "/agents/new-chat") => {
+            let payload: AgentBody = parse_json(body)?;
+            if payload.agent_id.is_empty() {
+                return Err("agentId is required".into());
+            }
+            let app2 = app.clone();
+            let agent_id = payload.agent_id.clone();
+            tauri::async_runtime::block_on(async move {
+                new_agent_chat_session(app2, agent_id).await
+            })?;
+            json_ok(json!({ "ok": true, "agentId": payload.agent_id }))
         }
         (Method::Post, "/shutdown") => {
             let app2 = app.clone();

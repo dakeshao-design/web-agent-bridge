@@ -3,10 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "pnpm --filter editor-app dev",
+    "dev": "pnpm --filter WABEditor dev",
     "build": "pnpm -r build",
     "clean": "node clean.mjs",
-    "tauri": "pnpm --filter editor-app tauri",
+    "tauri": "pnpm --filter WABEditor tauri",
     "agent-host": "pnpm --filter agent-host start",
     "ext:compile": "pnpm --filter webagent-bridge compile",
     "ext:watch": "pnpm --filter webagent-bridge watch"

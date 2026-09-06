@@ -18,13 +18,17 @@ type BridgeCommHandler = (
   content: string
 ) => void | Promise<void>;
 
+type NewChatOnloadHandler = (agentId: string) => void | Promise<void>;
+
 export class WebViewAgentBridge implements IAgentBridge {
   private statuses = new Map<string, AgentStatus>();
   private responseCallbackRef: { current?: ResponseHandler } = {};
   private chatMessageCallbackRef: { current?: ChatMessageHandler } = {};
   private bridgeCommCallbackRef: { current?: BridgeCommHandler } = {};
+  private newChatOnloadCallbackRef: { current?: NewChatOnloadHandler } = {};
   private unlistenChat?: UnlistenFn;
   private unlistenBridgeComm?: UnlistenFn;
+  private unlistenNewChatOnload?: UnlistenFn;
   private readonly ready: Promise<void>;
 
   constructor() {
@@ -91,6 +95,20 @@ export class WebViewAgentBridge implements IAgentBridge {
         });
       }
     });
+
+    this.unlistenNewChatOnload = await listen<{ agentId?: string }>(
+      'new-chat-onload-agent-mode',
+      (event) => {
+        const agentId = event.payload.agentId || '';
+        if (!agentId) return;
+        const handler = this.newChatOnloadCallbackRef.current;
+        if (handler) {
+          Promise.resolve(handler(agentId)).catch((err) => {
+            console.error('[agent-bridge] newChatOnload handler failed', err);
+          });
+        }
+      }
+    );
   }
 
   async createWebview(
@@ -111,6 +129,18 @@ export class WebViewAgentBridge implements IAgentBridge {
     }
     if (agent.typeStrategy) {
       bridgeConfig.typeStrategy = agent.typeStrategy;
+    }
+    if (agent.waitBeforeSend != null) {
+      bridgeConfig.waitBeforeSend = agent.waitBeforeSend;
+    }
+    if (agent.newChatOnload != null) {
+      bridgeConfig.newChatOnload = agent.newChatOnload;
+    }
+    if (agent.readFileLineLimit != null) {
+      bridgeConfig.readFileLineLimit = agent.readFileLineLimit;
+    }
+    if (agent.writeFileLineLimit != null) {
+      bridgeConfig.writeFileLineLimit = agent.writeFileLineLimit;
     }
 
     await invoke('create_agent_webview', {
@@ -159,6 +189,34 @@ export class WebViewAgentBridge implements IAgentBridge {
     });
   }
 
+  async pushBridgeConfig(
+    agentId: string,
+    opts?: { inputMode?: string; typeStrategy?: string; waitBeforeSend?: number }
+  ): Promise<void> {
+    await invoke('push_agent_bridge_config', {
+      agentId,
+      inputMode: opts?.inputMode ?? null,
+      typeStrategy: opts?.typeStrategy ?? null,
+      waitBeforeSend: opts?.waitBeforeSend ?? null,
+    });
+  }
+
+  async clickSend(agentId: string): Promise<void> {
+    await invoke('click_agent_send', { agentId });
+  }
+
+  async newChatSession(agentId: string): Promise<void> {
+    await invoke('new_agent_chat_session', { agentId });
+  }
+
+  async isComposerReady(agentId: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>('agent_composer_ready', { agentId });
+    } catch {
+      return false;
+    }
+  }
+
   async isLoading(agentId: string): Promise<boolean> {
     try {
       return await invoke<boolean>('agent_bridge_is_loading', { agentId });
@@ -179,6 +237,10 @@ export class WebViewAgentBridge implements IAgentBridge {
     this.bridgeCommCallbackRef.current = callback;
   }
 
+  onNewChatOnloadAgentMode(callback: NewChatOnloadHandler): void {
+    this.newChatOnloadCallbackRef.current = callback;
+  }
+
   getStatus(agentId: string): AgentStatus {
     return this.statuses.get(agentId) || 'idle';
   }
@@ -188,8 +250,11 @@ export class WebViewAgentBridge implements IAgentBridge {
     this.unlistenChat = undefined;
     this.unlistenBridgeComm?.();
     this.unlistenBridgeComm = undefined;
+    this.unlistenNewChatOnload?.();
+    this.unlistenNewChatOnload = undefined;
     this.responseCallbackRef.current = undefined;
     this.chatMessageCallbackRef.current = undefined;
     this.bridgeCommCallbackRef.current = undefined;
+    this.newChatOnloadCallbackRef.current = undefined;
   }
 }

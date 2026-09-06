@@ -200,7 +200,7 @@ export const applyRunPowershell: FileToolHandler = async (op, ctx) => {
   return { ok, message, content };
 };
 
-/** 旧 invoke 互換（未使用可） */
+/** 旧 invoke 兼容（可未使用） */
 export async function runPowershellOnce(
   command: string,
   cwd: string

@@ -2,7 +2,10 @@ use serde::Deserialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
-use crate::webview_bridge::{debug_query_agent, debug_query_bridge_response, debug_query_last_file_op, debug_reset_sync, WebviewState};
+use crate::webview_bridge::{
+    debug_eval_composer_ready, debug_query_agent, debug_query_bridge_response, debug_query_last_file_op,
+    debug_reset_sync, WebviewState,
+};
 
 const HELP_TEXT: &str = r#"WebAgent Debug CLI (HTTP)
 
@@ -18,6 +21,7 @@ Commands:
   GET  /debug/agent-dom?agentId=example
   GET  /debug/conversation?agentId=example
   GET  /debug/bridge-response?agentId=example
+  GET  /debug/composer-ready?agentId=example
   GET  /debug/last-file-op
   POST /debug/reset-sync     {"agentId":"example"}
 
@@ -125,6 +129,12 @@ fn handle_request(
         (Method::Get, "/debug/bridge-response") => {
             let agent_id = required_agent_id(&query, &body)?;
             json_ok(debug_query_bridge_response(app, &agent_id)?)
+        }
+        (Method::Get, "/debug/composer-ready") => {
+            let agent_id = required_agent_id(&query, &body)?;
+            let label = format!("agent-{}", agent_id);
+            let raw = crate::webview_bridge::debug_eval_composer_ready(app, &label);
+            json_ok(json!({ "ok": true, "agentId": agent_id, "ready": raw }))
         }
         (Method::Post, "/debug/click") => {
             let payload: ClickBody = parse_json(&body)?;
