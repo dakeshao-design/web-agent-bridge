@@ -1,10 +1,11 @@
-export { WORKSPACE_DATA_DIR } from './constants.js';
+export { WORKSPACE_DATA_DIR, SKILLS_DIR } from './constants.js';
 export type { IFileService } from './interfaces/IFileService.js';
 export type { IAgentBridge, AgentStatus } from './interfaces/IAgentBridge.js';
 export type { IContextProvider, FileContext } from './interfaces/IContextProvider.js';
 export type {
   IFileOperationParser,
   FileOperation,
+  FileEditReplacement,
 } from './interfaces/IFileOperationParser.js';
 export type {
   AgentConfig,
@@ -28,6 +29,18 @@ export {
   formatToolArgs,
   buildToolTable,
 } from './agent/agentModePrompt.js';
+export {
+  parseSkillMd,
+  mergeSkills,
+  findSkillByName,
+  buildSkillsPromptSection,
+  loadSkillsFromRoot,
+  type AgentSkill,
+  type SkillInjectMode,
+  type SkillSource,
+  type ParsedSkillMd,
+  type DiscoverSkillsIO,
+} from './agent/skills.js';
 export {
   parseFileLineLimitsFromBridgeScript,
   parseSiteAgentPromptFromBridgeScript,
@@ -100,8 +113,11 @@ export {
   countFileRowsTool,
   writeFileTool,
   appendFileTool,
+  prepareAppendContent,
   editFileRangeTool,
   buildEditFileRangeResultMeta,
+  editFileTool,
+  applyEditFileReplacements,
   deleteFileTool,
   deletePathTool,
   movePathTool,
@@ -110,7 +126,10 @@ export {
   grepTool,
   runGrep,
   runPowershellTool,
+  readSkillTool,
   type AgentToolDefinition,
   type AgentToolArgDefinition,
   type EditFileRangeResultMeta,
+  type EditFileReplacement,
+  type EditFileLogicResult,
 } from './tools/index.js';

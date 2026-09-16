@@ -1,5 +1,6 @@
+import { WORKSPACE_DATA_DIR } from '@my-agent-editor/shared';
 import { readDir, BaseDirectory } from '@tauri-apps/plugin-fs';
-import { isAbsolutePath, joinPath } from './pathUtils';
+import { joinPath } from './pathUtils';
 import { HIDDEN_ENTRIES } from './fileTree';
 
 async function readDirEntries(dir: string, isAbsolute: boolean) {
@@ -8,17 +9,24 @@ async function readDirEntries(dir: string, isAbsolute: boolean) {
     : readDir(dir, { baseDir: BaseDirectory.AppData });
 }
 
+function shouldSkipEntry(name: string, skipWorkspaceDataDir: boolean): boolean {
+  if (HIDDEN_ENTRIES.has(name)) return true;
+  return skipWorkspaceDataDir && name === WORKSPACE_DATA_DIR;
+}
+
 export async function listFilesInDir(
   dir: string,
   isAbsolute: boolean,
-  deep: boolean
+  deep: boolean,
+  skipWorkspaceDataDir = false
 ): Promise<string[]> {
   if (!deep) {
     const entries = await readDirEntries(dir, isAbsolute);
     return entries
       .filter(
         (entry) =>
-          (entry.isFile || entry.isDirectory) && !HIDDEN_ENTRIES.has(entry.name)
+          (entry.isFile || entry.isDirectory) &&
+          !shouldSkipEntry(entry.name, skipWorkspaceDataDir)
       )
       .map((entry) => (entry.isDirectory ? `${entry.name}/` : entry.name))
       .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
@@ -33,7 +41,7 @@ export async function listFilesInDir(
     );
 
     for (const entry of sorted) {
-      if (HIDDEN_ENTRIES.has(entry.name)) continue;
+      if (shouldSkipEntry(entry.name, skipWorkspaceDataDir)) continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isFile) {
         files.push(rel);

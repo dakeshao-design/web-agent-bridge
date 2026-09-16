@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -52,13 +52,101 @@ fn make_id() -> String {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// 将控制台输出对齐为 UTF-8
+fn wrap_utf8_command(command: &str) -> String {
+    format!(
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
+         $OutputEncoding = [Console]::OutputEncoding; \
+         try {{ chcp 65001 | Out-Null }} catch {{}}; \
+         {command}"
+    )
+}
+
+/// 按系统默认代码页解码
+#[cfg(windows)]
+fn decode_system_default(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    extern "system" {
+        fn MultiByteToWideChar(
+            code_page: u32,
+            flags: u32,
+            multi_byte: *const u8,
+            multi_byte_len: i32,
+            wide: *mut u16,
+            wide_len: i32,
+        ) -> i32;
+    }
+    const CP_ACP: u32 = 0;
+    unsafe {
+        let needed = MultiByteToWideChar(
+            CP_ACP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            std::ptr::null_mut(),
+            0,
+        );
+        if needed <= 0 {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        let mut wide = vec![0u16; needed as usize];
+        let written = MultiByteToWideChar(
+            CP_ACP,
+            0,
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            wide.as_mut_ptr(),
+            needed,
+        );
+        if written <= 0 {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        String::from_utf16_lossy(&wide[..written as usize])
+    }
+}
+
+#[cfg(not(windows))]
+fn decode_system_default(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// 优先 UTF-8，失败则用系统默认编码
+fn decode_output_bytes(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_owned();
+    }
+    decode_system_default(bytes)
+}
+
+fn append_pipe_output(reader: impl Read, output: Arc<Mutex<String>>) {
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                let chunk = decode_output_bytes(&buf);
+                if let Ok(mut o) = output.lock() {
+                    o.push_str(&chunk);
+                }
+            }
+            // 仅 IO 错误时结束；非法 UTF-8 不中断
+            Err(_) => break,
+        }
+    }
+}
+
 fn start_powershell_inner(
     command: String,
     cwd: Option<String>,
     state: &PowershellState,
 ) -> Result<String, String> {
+    let wrapped = wrap_utf8_command(&command);
     let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &command])
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &wrapped])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -89,41 +177,11 @@ fn start_powershell_inner(
     thread::spawn(move || {
         let out_handle = stdout.map(|out| {
             let output_c = Arc::clone(&output_c);
-            thread::spawn(move || {
-                let mut reader = BufReader::new(out);
-                let mut buf = String::new();
-                loop {
-                    buf.clear();
-                    match reader.read_line(&mut buf) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            if let Ok(mut o) = output_c.lock() {
-                                o.push_str(&buf);
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
+            thread::spawn(move || append_pipe_output(out, output_c))
         });
         let err_handle = stderr.map(|err| {
             let output_c = Arc::clone(&output_c);
-            thread::spawn(move || {
-                let mut reader = BufReader::new(err);
-                let mut buf = String::new();
-                loop {
-                    buf.clear();
-                    match reader.read_line(&mut buf) {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            if let Ok(mut o) = output_c.lock() {
-                                o.push_str(&buf);
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            })
+            thread::spawn(move || append_pipe_output(err, output_c))
         });
 
         let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);

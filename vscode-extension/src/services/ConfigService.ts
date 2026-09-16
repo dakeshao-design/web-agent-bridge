@@ -3,13 +3,13 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
-const CONFIG_DIR_NAME = 'agent-editor';
+const CONFIG_DIR_NAME = '.web-agent-bridge';
 
 export class ConfigService {
   private readonly userRoot: string;
 
   constructor(private readonly context: vscode.ExtensionContext) {
-    this.userRoot = path.join(os.homedir(), 'AppData', 'Roaming', CONFIG_DIR_NAME);
+    this.userRoot = path.join(os.homedir(), CONFIG_DIR_NAME);
   }
 
   getUserRoot(): string {

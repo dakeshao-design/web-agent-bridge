@@ -18,6 +18,16 @@ type Waiter = {
   timer?: ReturnType<typeof setTimeout>;
 };
 
+/** 将控制台输出对齐为 UTF-8 */
+function wrapPowershellUtf8(command: string): string {
+  return (
+    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ' +
+    '$OutputEncoding = [Console]::OutputEncoding; ' +
+    'try { chcp 65001 | Out-Null } catch {}; ' +
+    command
+  );
+}
+
 class NodePowershellSession implements PowershellSession {
   readonly id: string;
   private output = '';
@@ -31,14 +41,14 @@ class NodePowershellSession implements PowershellSession {
     this.id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     this.child = spawn(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', command],
+      ['-NoProfile', '-NonInteractive', '-Command', wrapPowershellUtf8(command)],
       { cwd, windowsHide: true }
     );
-    this.child.stdout.on('data', (d) => {
-      this.output += String(d);
+    this.child.stdout.on('data', (d: Buffer) => {
+      this.output += d.toString('utf8');
     });
-    this.child.stderr.on('data', (d) => {
-      this.output += String(d);
+    this.child.stderr.on('data', (d: Buffer) => {
+      this.output += d.toString('utf8');
     });
     this.child.on('close', (code) => {
       this.exited = true;

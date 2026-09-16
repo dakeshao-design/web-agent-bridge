@@ -35,6 +35,8 @@ import {
   type ToolApplyResult,
   type ToolPermissionMode,
   type ToolPermissionsConfig,
+  type AgentSkill,
+  findSkillByName,
 } from '@my-agent-editor/shared';
 import { ask, message } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -58,6 +60,7 @@ import {
   ConversationLogService,
   type ChatLogEntry,
 } from './services/ConversationLogService';
+import { discoverSkills } from './services/discoverSkills';
 import { applyFileOperation as executeFileTool } from './tools';
 import {
   killAllPowershellSessions,
@@ -112,10 +115,12 @@ export default function App() {
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
   const [agentModeEnabled, setAgentModeEnabled] = useState(false);
   const [fileTreeWidth, setFileTreeWidth] = useState(240);
-  const [agentPanelWidth, setAgentPanelWidth] = useState(480);
+  const [agentPanelWidth, setAgentPanelWidth] = useState(600);
   const [mainContentWidth, setMainContentWidth] = useState(0);
   const [chatLogEntries, setChatLogEntries] = useState<ChatLogEntry[]>([]);
   const [chatLogFilePath, setChatLogFilePath] = useState('');
+  const [runtimeLogEntries, setRuntimeLogEntries] = useState<ChatLogEntry[]>([]);
+  const [runtimeLogFilePath, setRuntimeLogFilePath] = useState('');
   const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('chat');
   const [powershellEntries, setPowershellEntries] = useState<PowershellViewEntry[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -146,6 +151,7 @@ export default function App() {
   const activeAgentIdRef = useRef<string | null>(null);
   const agentsRef = useRef<AgentConfig[]>([]);
   const toolPermissionsRef = useRef<ToolPermissionsConfig>(mergeToolPermissions());
+  const skillsRef = useRef<AgentSkill[]>([]);
   const adminModeRef = useRef(false);
   const settingsOpenRef = useRef(false);
   const debugDialogOpenRef = useRef(false);
@@ -274,9 +280,23 @@ export default function App() {
 
   const refreshChatLog = useCallback(() => {
     startTransition(() => {
-      setChatLogEntries([...conversationLogService.getEntries()]);
-      setChatLogFilePath(conversationLogService.getLogFilePath());
+      setChatLogEntries([...conversationLogService.getChatEntries()]);
+      setRuntimeLogEntries([...conversationLogService.getRuntimeEntries()]);
+      setChatLogFilePath(conversationLogService.getChatLogFilePath());
+      setRuntimeLogFilePath(conversationLogService.getRuntimeLogFilePath());
     });
+  }, []);
+
+  const beginLogSession = useCallback(async (agentId: string) => {
+    const paths = await conversationLogService.beginSession(agentId);
+    loggedToolCaptureRef.current.clear();
+    loggedChatKeysRef.current.clear();
+    loggedAgentTextsRef.current.clear();
+    setChatLogFilePath(paths.chat);
+    setRuntimeLogFilePath(paths.runtime);
+    setChatLogEntries([]);
+    setRuntimeLogEntries([]);
+    return paths;
   }, []);
 
   const logUserMessage = useCallback(
@@ -387,6 +407,7 @@ export default function App() {
         addLogEntry,
         publishLastFileOp,
         readFileLineLimit,
+        findSkill: (name) => findSkillByName(skillsRef.current, name),
       });
       if (
         result.ok &&
@@ -1073,20 +1094,25 @@ export default function App() {
             id: 'agent-mode-prompt',
             label: 'Agent mode promet',
             onClick: () => {
-              const root =
-                workspaceRoot || userWorkspaceRef.current || fileService.getWorkspaceRoot();
-              const targetId = activeAgentIdRef.current;
-              const agent = targetId
-                ? agentsRef.current.find((a) => a.id === targetId)
-                : undefined;
-              const body = buildAgentModePrompt(
-                root || undefined,
-                agent?.readFileLineLimit,
-                toolPermissionsRef.current,
-                agent?.writeFileLineLimit,
-                agent?.siteAgentPrompt
-              );
-              openDialog({ kind: 'agentMode', title: 'Agent mode promet', body });
+              void (async () => {
+                const root =
+                  workspaceRoot || userWorkspaceRef.current || fileService.getWorkspaceRoot();
+                const targetId = activeAgentIdRef.current;
+                const agent = targetId
+                  ? agentsRef.current.find((a) => a.id === targetId)
+                  : undefined;
+                const skills = await discoverSkills(fileService, root);
+                skillsRef.current = skills;
+                const body = buildAgentModePrompt(
+                  root || undefined,
+                  agent?.readFileLineLimit,
+                  toolPermissionsRef.current,
+                  agent?.writeFileLineLimit,
+                  agent?.siteAgentPrompt,
+                  skills
+                );
+                openDialog({ kind: 'agentMode', title: 'Agent mode promet', body });
+              })();
             },
           },
           {
@@ -1204,9 +1230,7 @@ export default function App() {
 
   useEffect(() => {
     initConfig().catch(console.error);
-    conversationLogService.init().then((path) => {
-      setChatLogFilePath(path);
-    }).catch(console.error);
+    // 日志文件在 beginSession / 首次写入时创建
 
     return () => {
       configLoaderRef.current?.stopWatch();
@@ -1250,10 +1274,17 @@ export default function App() {
       setWorkspaceRoot(root);
       conversationLogService.resetLogTarget();
       loggedToolCaptureRef.current.clear();
-      conversationLogService.init().then((path) => setChatLogFilePath(path)).catch(console.error);
+      setChatLogFilePath('');
+      setRuntimeLogFilePath('');
+      setChatLogEntries([]);
+      setRuntimeLogEntries([]);
+      const agentId = activeAgentIdRef.current;
+      if (agentId) {
+        void beginLogSession(agentId).catch(console.error);
+      }
       setTreeRefreshKey((key) => key + 1);
     }
-  }, []);
+  }, [beginLogSession]);
 
   const handleOpenFileFromTree = useCallback(
     async (path: string) => {
@@ -1434,12 +1465,15 @@ export default function App() {
     const targetId = explicitAgentId || activeAgentIdRef.current;
     if (!targetId) return;
     const agent = agentsRef.current.find((a) => a.id === targetId);
+    const skills = await discoverSkills(fileService, root);
+    skillsRef.current = skills;
     const msg = buildAgentModePrompt(
       root || undefined,
       agent?.readFileLineLimit,
       toolPermissionsRef.current,
       agent?.writeFileLineLimit,
-      agent?.siteAgentPrompt
+      agent?.siteAgentPrompt,
+      skills
     );
     setAgentModeEnabled(true);
     await agentBridge.pushBridgeConfig(targetId, {
@@ -1509,6 +1543,9 @@ export default function App() {
           if (onloadAgentModeDoneRef.current.has(agentId)) return;
           onloadAgentModeDoneRef.current.add(agentId);
           try {
+            if (!conversationLogService.getChatLogFilePath()) {
+              await beginLogSession(agentId);
+            }
             await handleSendAgentMode(agentId);
           } catch (err) {
             onloadAgentModeDoneRef.current.delete(agentId);
@@ -1538,12 +1575,15 @@ export default function App() {
     const targetId = activeAgentIdRef.current;
     if (!targetId) return;
     const agent = agentsRef.current.find((a) => a.id === targetId);
+    const skills = await discoverSkills(fileService, workspaceRoot);
+    skillsRef.current = skills;
     const msg = buildAgentModePrompt(
       workspaceRoot || undefined,
       agent?.readFileLineLimit,
       toolPermissionsRef.current,
       agent?.writeFileLineLimit,
-      agent?.siteAgentPrompt
+      agent?.siteAgentPrompt,
+      skills
     );
     setAgentModeEnabled(true);
     await agentBridge.pushBridgeConfig(targetId, {
@@ -1567,11 +1607,12 @@ export default function App() {
     try {
       await agentBridge.newChatSession(targetId);
       await new Promise((r) => setTimeout(r, 500));
+      await beginLogSession(targetId);
       await handleSendAgentMode();
     } catch (err) {
       await message(`新会话失败：${String(err)}`, { title: '新会话', kind: 'error' });
     }
-  }, [workspaceRoot, handleSendAgentMode]);
+  }, [workspaceRoot, beginLogSession, handleSendAgentMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1598,8 +1639,14 @@ export default function App() {
           setWorkspaceRoot(root);
           conversationLogService.resetLogTarget();
           loggedToolCaptureRef.current.clear();
-          const logPath = await conversationLogService.init();
-          setChatLogFilePath(logPath);
+          setChatLogFilePath('');
+          setRuntimeLogFilePath('');
+          setChatLogEntries([]);
+          setRuntimeLogEntries([]);
+          const agentId = activeAgentIdRef.current;
+          if (agentId) {
+            await beginLogSession(agentId);
+          }
           setTreeRefreshKey((key) => key + 1);
           return;
         }
@@ -1644,11 +1691,17 @@ export default function App() {
     logAndSendToAgent,
     handleSelectAgent,
     ensureAgentWebview,
+    beginLogSession,
     workspaceRoot,
   ]);
 
   const handleClearChatLog = useCallback(() => {
-    conversationLogService.clear();
+    conversationLogService.clearChatDisplay();
+    refreshChatLog();
+  }, [refreshChatLog]);
+
+  const handleClearRuntimeLog = useCallback(() => {
+    conversationLogService.clearRuntimeDisplay();
     refreshChatLog();
   }, [refreshChatLog]);
 
@@ -1827,6 +1880,9 @@ export default function App() {
             chatEntries={chatLogEntries}
             chatLogFilePath={chatLogFilePath}
             onClearChat={handleClearChatLog}
+            runtimeEntries={runtimeLogEntries}
+            runtimeLogFilePath={runtimeLogFilePath}
+            onClearRuntime={handleClearRuntimeLog}
             powershellEntries={powershellEntries}
             onClearPowershell={handleClearPowershell}
             runningCount={powershellRunningCount}

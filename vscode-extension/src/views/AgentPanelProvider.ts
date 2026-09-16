@@ -43,14 +43,16 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         case 'agentMode':
           await this.session.sendAgentMode();
           break;
-        case 'getAgentModePrompt':
+        case 'getAgentModePrompt': {
+          const body = await this.session.getAgentModePromptText();
           this.view?.webview.postMessage({
             type: 'debugDialog',
             kind: 'agentMode',
             title: 'Agent mode promet',
-            body: this.session.getAgentModePromptText(),
+            body,
           });
           break;
+        }
         case 'sendAgentModePrompt':
           await this.session.sendAgentMode();
           break;

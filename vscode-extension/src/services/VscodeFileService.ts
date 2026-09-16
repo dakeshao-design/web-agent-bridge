@@ -1,16 +1,20 @@
 import * as vscode from 'vscode';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { WORKSPACE_DATA_DIR, type IFileService } from '@my-agent-editor/shared';
+import { WORKSPACE_DATA_DIR, type IFileService, prepareAppendContent } from '@my-agent-editor/shared';
 
-/** ls / 递归列举时跳过的目录名 */
+/** ls / 递归列举时始终跳过的目录名 */
 const HIDDEN_ENTRIES = new Set([
   'node_modules',
   '.git',
   'target',
   'dist',
-  WORKSPACE_DATA_DIR,
 ]);
+
+function shouldSkipEntry(name: string, skipWorkspaceDataDir: boolean): boolean {
+  if (HIDDEN_ENTRIES.has(name)) return true;
+  return skipWorkspaceDataDir && name === WORKSPACE_DATA_DIR;
+}
 
 function isAbsolutePath(p: string): boolean {
   return /^([A-Za-z]:[\\/]|\/)/.test(p);
@@ -30,11 +34,15 @@ export class VscodeFileService implements IFileService {
   }
 
   resolvePath(input: string): string {
-    if (isAbsolutePath(input)) return input;
+    const trimmed = input.trim().replace(/\\/g, '/').replace(/\/\.$/, '');
+    if (!trimmed || trimmed === '.') {
+      return this.getWorkspaceRoot() || '.';
+    }
+    if (isAbsolutePath(trimmed)) return trimmed.replace(/\/$/, '');
     const root = this.getWorkspaceRoot();
-    if (!root) return input;
+    if (!root) return trimmed;
     const sep = root.endsWith('/') ? '' : '/';
-    return `${root}${sep}${input.replace(/\\/g, '/')}`;
+    return `${root}${sep}${trimmed}`;
   }
 
   async read(filePath: string): Promise<string> {
@@ -58,7 +66,7 @@ export class VscodeFileService implements IFileService {
 
   async append(filePath: string, content: string): Promise<void> {
     const existing = await this.read(filePath).catch(() => '');
-    await this.write(filePath, existing + content);
+    await this.write(filePath, existing + prepareAppendContent(existing, content));
   }
 
   async delete(filePath: string): Promise<void> {
@@ -118,8 +126,11 @@ export class VscodeFileService implements IFileService {
   }
 
   async listFiles(dir: string, deep = false): Promise<string[]> {
-    const resolved = this.resolvePath(dir);
+    const resolved = this.resolvePath(dir).replace(/\\/g, '/').replace(/\/$/, '');
     const root = this.getWorkspaceRoot();
+    // 工作区根目录 ls 时忽略数据目录；显式指定时可列举
+    const skipWorkspaceDataDir =
+      !!root && resolved.toLowerCase() === root.toLowerCase();
     const results: string[] = [];
 
     const walk = async (current: string, prefix: string) => {
@@ -131,7 +142,7 @@ export class VscodeFileService implements IFileService {
         return;
       }
       for (const [name, type] of entries) {
-        if (HIDDEN_ENTRIES.has(name)) continue;
+        if (shouldSkipEntry(name, skipWorkspaceDataDir)) continue;
         const rel = prefix ? `${prefix}/${name}` : name;
         const full = path.join(current, name);
         const toResult = (value: string) =>

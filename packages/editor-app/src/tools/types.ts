@@ -1,4 +1,4 @@
-import type { IFileService, FileOperation, ToolApplyResult } from '@my-agent-editor/shared';
+import type { IFileService, FileOperation, ToolApplyResult, AgentSkill } from '@my-agent-editor/shared';
 import type { FileOpLogEntry } from '../components/FileOpLog';
 
 export interface ToolApplyContext {
@@ -21,6 +21,8 @@ export interface ToolApplyContext {
   ) => void;
   /** 当前 Agent 的读文件行数上限；未设置则不限制 */
   readFileLineLimit?: number;
+  /** 按名称查找已发现的 Skill */
+  findSkill?: (name: string) => AgentSkill | undefined;
 }
 
 export type FileToolHandler = (

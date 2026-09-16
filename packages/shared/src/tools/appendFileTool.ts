@@ -2,7 +2,7 @@ import type { AgentToolDefinition } from './types.js';
 
 export const appendFileTool: AgentToolDefinition = {
   name: 'append_file',
-  description: '追加内容',
+  description: '追加文件内容',
   args: [
     {
       name: 'path',
@@ -10,7 +10,8 @@ export const appendFileTool: AgentToolDefinition = {
     },
     {
       name: 'content',
-      description: '要追加到文件末尾的内容',
+      description: '要追加到文件末尾的内容，始终另起一行写入',
+      isFileContent: true,
     },
   ],
   action: 'append',

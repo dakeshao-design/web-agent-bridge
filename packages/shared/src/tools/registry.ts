@@ -6,6 +6,7 @@ import { countFileRowsTool } from './countFileRowsTool.js';
 import { writeFileTool } from './writeFileTool.js';
 import { appendFileTool } from './appendFileTool.js';
 import { editFileRangeTool } from './editFileRangeTool.js';
+import { editFileTool } from './editFileTool.js';
 import { deleteFileTool } from './deleteFileTool.js';
 import { deletePathTool } from './deletePathTool.js';
 import { movePathTool } from './movePathTool.js';
@@ -13,6 +14,7 @@ import { copyPathTool } from './copyPathTool.js';
 import { lsTool } from './lsTool.js';
 import { grepTool } from './grepTool.js';
 import { runPowershellTool } from './runPowershellTool.js';
+import { readSkillTool } from './readSkillTool.js';
 
 export const AGENT_TOOLS: readonly AgentToolDefinition[] = [
   readFileTool,
@@ -21,6 +23,7 @@ export const AGENT_TOOLS: readonly AgentToolDefinition[] = [
   writeFileTool,
   appendFileTool,
   editFileRangeTool,
+  editFileTool,
   deleteFileTool,
   deletePathTool,
   movePathTool,
@@ -28,6 +31,7 @@ export const AGENT_TOOLS: readonly AgentToolDefinition[] = [
   lsTool,
   grepTool,
   runPowershellTool,
+  readSkillTool,
 ];
 
 const byName = new Map(AGENT_TOOLS.map((tool) => [tool.name, tool]));

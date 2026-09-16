@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { readTextFile, writeTextFile, remove, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { IFileService } from '@my-agent-editor/shared';
+import { prepareAppendContent } from '@my-agent-editor/shared';
 import { isAbsolutePath, resolvePath, normalizeWorkspaceRoot, resolveListDir } from './file/pathUtils';
 import { listDirectoryEntries, type FileTreeEntry } from './file/fileTree';
 import { ensureParentDir } from './file/ensureParentDir';
@@ -114,11 +115,13 @@ export class TauriFileService implements IFileService {
   async append(path: string, content: string): Promise<void> {
     const resolved = this.resolvePath(path);
     await ensureParentDir(resolved);
+    const existing = await this.read(path).catch(() => '');
+    const toAppend = prepareAppendContent(existing, content);
     if (isAbsolutePath(resolved)) {
-      await writeTextFile(resolved, content, { append: true });
+      await writeTextFile(resolved, toAppend, { append: true });
       return;
     }
-    await writeTextFile(resolved, content, { append: true, baseDir: BaseDirectory.AppData });
+    await writeTextFile(resolved, toAppend, { append: true, baseDir: BaseDirectory.AppData });
   }
 
 
@@ -176,7 +179,12 @@ export class TauriFileService implements IFileService {
   async listFiles(dir: string, deep = false): Promise<string[]> {
     const resolved = resolveListDir(dir, this.workspaceRoot);
     const isAbsolute = isAbsolutePath(resolved);
-    return listFilesInDir(resolved, isAbsolute, deep);
+    const root = normalizeWorkspaceRoot(this.workspaceRoot);
+    const resolvedNorm = resolved.replace(/\\/g, '/').replace(/\/$/, '');
+    // 工作区根目录 ls 时忽略数据目录；显式指定时可列举
+    const skipWorkspaceDataDir =
+      !!root && resolvedNorm.toLowerCase() === root.toLowerCase();
+    return listFilesInDir(resolved, isAbsolute, deep, skipWorkspaceDataDir);
   }
 
 

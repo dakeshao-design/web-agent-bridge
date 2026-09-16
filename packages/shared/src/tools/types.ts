@@ -12,6 +12,8 @@ export type ToolApplyResult = {
 export interface AgentToolArgDefinition {
   readonly name: string;
   readonly description: string;
+  /** 文件内容参数：解析时不 trim */
+  readonly isFileContent?: boolean;
 }
 
 export interface AgentToolDefinition {
@@ -21,4 +23,6 @@ export interface AgentToolDefinition {
   readonly action: FileOperation['action'];
   parseArgs(args: Record<string, string>): FileOperation | null;
   toArgs(operation: FileOperation): Record<string, string>;
+  /** 可变名文件内容参数，如 old_2；未实现则只认 args[].isFileContent */
+  isFileContentArg?(argName: string): boolean;
 }

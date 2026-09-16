@@ -28,9 +28,11 @@ import {
   resolveEffectivePermission,
   resolveToolNameForOperation,
   listToolsForSettings,
+  findSkillByName,
   type AgentConfig,
   type AgentStatus,
   type AppConfig,
+  type AgentSkill,
   type FileOperation,
   type ToolApplyResult,
   type ToolPermissionMode,
@@ -40,6 +42,7 @@ import type { ConfigService } from '../services/ConfigService';
 import type { VscodeFileService } from '../services/VscodeFileService';
 import type { AgentHostBridge } from '../services/AgentHostBridge';
 import type { AgentHostProcess } from '../services/AgentHostProcess';
+import { discoverSkills } from '../services/discoverSkills';
 import { applyFileOperation } from '../tools/applyFileOperation';
 import {
   killAllPowershellSessions,
@@ -78,6 +81,7 @@ export class AgentSession {
   private chats: ChatEntry[] = [];
   private logs: LogEntry[] = [];
   private agentModeEnabled = false;
+  private skills: AgentSkill[] = [];
   private onloadAgentModeDone = new Set<string>();
   private parser = new FileOperationParser('structured');
   private callToolParser = new CallToolParser();
@@ -404,27 +408,31 @@ export class AgentSession {
     const agentId = explicitAgentId || this.activeAgentId;
     const root = this.fileService.getWorkspaceRoot();
     const agent = this.agents.find((a) => a.id === agentId);
+    this.skills = await discoverSkills(this.fileService, this.configService);
     const msg = buildAgentModePrompt(
       root || undefined,
       agent?.readFileLineLimit,
       this.toolPermissions,
       agent?.writeFileLineLimit,
-      agent?.siteAgentPrompt
+      agent?.siteAgentPrompt,
+      this.skills
     );
     this.agentModeEnabled = true;
     await this.sendChat(msg, agentId || undefined);
   }
 
-  getAgentModePromptText(): string {
+  async getAgentModePromptText(): Promise<string> {
     const agentId = this.activeAgentId;
     const root = this.fileService.getWorkspaceRoot();
     const agent = this.agents.find((a) => a.id === agentId);
+    this.skills = await discoverSkills(this.fileService, this.configService);
     return buildAgentModePrompt(
       root || undefined,
       agent?.readFileLineLimit,
       this.toolPermissions,
       agent?.writeFileLineLimit,
-      agent?.siteAgentPrompt
+      agent?.siteAgentPrompt,
+      this.skills
     );
   }
 
@@ -782,6 +790,7 @@ export class AgentSession {
         resolvePath: (p) => this.fileService.resolvePath(p),
         addLogEntry: (operation, status, message) => this.addLog(operation, status, message),
         readFileLineLimit,
+        findSkill: (name) => findSkillByName(this.skills, name),
         openInEditor: async (filePath, content) => {
           const uri = vscode.Uri.file(this.fileService.resolvePath(filePath));
           const doc = await vscode.workspace.openTextDocument(uri);

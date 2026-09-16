@@ -12,6 +12,7 @@ export const writeFileTool: AgentToolDefinition = {
     {
       name: 'content',
       description: '要写入的完整文件内容，会覆盖原文件。含代码围栏或工具关键字时用 <<<哨兵 包裹',
+      isFileContent: true,
     },
     {
       name: 'content_b64',

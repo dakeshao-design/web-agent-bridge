@@ -42,7 +42,7 @@ export function isPathInsideWorkspace(absPath: string, workspaceRoot: string): b
 
 /** 收集操作涉及的路径字段 */
 export function collectOperationTargetPaths(op: FileOperation): string[] {
-  if (op.action === 'run_powershell') return [];
+  if (op.action === 'run_powershell' || op.action === 'read_skill') return [];
   const paths: string[] = [];
   if (op.path?.trim()) paths.push(op.path.trim());
   if (op.dest?.trim()) paths.push(op.dest.trim());
@@ -101,6 +101,8 @@ export function buildPermissionAskMessage(toolName: string, op: FileOperation): 
     const cmd = (op.command ?? '').trim();
     const preview = cmd.length > 200 ? cmd.slice(0, 200) + '…' : cmd;
     lines.push(`命令: ${preview || '(空)'}`);
+  } else if (op.action === 'read_skill') {
+    lines.push(`Skill: ${op.path?.trim() || '(空)'}`);
   } else {
     if (op.path?.trim()) lines.push(`路径: ${op.path.trim()}`);
     if (op.dest?.trim()) lines.push(`目标: ${op.dest.trim()}`);

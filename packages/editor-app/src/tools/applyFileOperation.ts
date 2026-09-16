@@ -6,6 +6,7 @@ import { applyCountFileRows } from './handlers/countFileRowsHandler';
 import { applyWriteFile } from './handlers/writeFileHandler';
 import { applyAppendFile } from './handlers/appendFileHandler';
 import { applyEditFileRange } from './handlers/editFileRangeHandler';
+import { applyEditFile } from './handlers/editFileHandler';
 import { applyDeleteFile } from './handlers/deleteFileHandler';
 import { applyDeletePath } from './handlers/deletePathHandler';
 import { applyMovePath } from './handlers/movePathHandler';
@@ -13,6 +14,7 @@ import { applyCopyPath } from './handlers/copyPathHandler';
 import { applyListFiles } from './handlers/lsHandler';
 import { applyGrep } from './handlers/grepHandler';
 import { applyRunPowershell } from './handlers/runPowershellHandler';
+import { applyReadSkill } from './handlers/readSkillHandler';
 
 const handlers = {
   read: applyReadFile,
@@ -21,6 +23,7 @@ const handlers = {
   write: applyWriteFile,
   append: applyAppendFile,
   edit_range: applyEditFileRange,
+  edit: applyEditFile,
   delete: applyDeleteFile,
   delete_path: applyDeletePath,
   move: applyMovePath,
@@ -28,6 +31,7 @@ const handlers = {
   list: applyListFiles,
   grep: applyGrep,
   run_powershell: applyRunPowershell,
+  read_skill: applyReadSkill,
 } as const;
 
 export async function applyFileOperation(
@@ -35,7 +39,7 @@ export async function applyFileOperation(
   ctx: ToolApplyContext
 ) {
   const resolvedOp =
-    op.action === 'list' || op.action === 'run_powershell'
+    op.action === 'list' || op.action === 'run_powershell' || op.action === 'read_skill'
       ? op
       : op.action === 'move' || op.action === 'copy'
         ? {

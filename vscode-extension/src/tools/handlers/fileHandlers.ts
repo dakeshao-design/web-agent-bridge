@@ -1,4 +1,4 @@
-import { runGrep, buildReadFileOverLimitMessage, countContentLines, buildEditFileRangeResultMeta } from '@my-agent-editor/shared';
+import { runGrep, buildReadFileOverLimitMessage, countContentLines, buildEditFileRangeResultMeta, applyEditFileReplacements } from '@my-agent-editor/shared';
 import type { FileToolHandler } from '../types';
 
 export const applyReadFile: FileToolHandler = async (op, ctx) => {
@@ -80,6 +80,20 @@ export const applyEditFileRange: FileToolHandler = async (op, ctx) => {
   };
 };
 
+export const applyEditFile: FileToolHandler = async (op, ctx) => {
+  const data = await ctx.fileService.read(op.path);
+  const result = applyEditFileReplacements(data, op.replacements ?? []);
+  await ctx.fileService.write(op.path, result.next);
+  ctx.addLogEntry(op, 'applied', result.logMessage);
+  if (ctx.openInEditor) await ctx.openInEditor(op.path, result.next);
+  return {
+    ok: true,
+    total_lines: result.total_lines,
+    edited_range: result.edited_range,
+    deleted_range: result.deleted_range,
+  };
+};
+
 export const applyDeleteFile: FileToolHandler = async (op, ctx) => {
   await ctx.fileService.delete(op.path);
   ctx.addLogEntry(op, 'applied');
@@ -124,4 +138,22 @@ export const applyGrep: FileToolHandler = async (op, ctx) => {
   const result = await runGrep(ctx.fileService, op);
   ctx.addLogEntry(op, 'applied', result.message);
   return { ok: true, message: result.message, content: result.content };
+};
+
+export const applyReadSkill: FileToolHandler = async (op, ctx) => {
+  const name = op.path?.trim();
+  if (!name) {
+    const message = '缺少 skill 名称';
+    ctx.addLogEntry(op, 'error', message);
+    return { ok: false, message };
+  }
+  const skill = ctx.findSkill?.(name);
+  if (!skill) {
+    const message = `未找到 skill: ${name}`;
+    ctx.addLogEntry(op, 'error', message);
+    return { ok: false, message };
+  }
+  const message = `已读取 skill ${skill.name}`;
+  ctx.addLogEntry(op, 'applied', message);
+  return { ok: true, message, content: skill.body };
 };

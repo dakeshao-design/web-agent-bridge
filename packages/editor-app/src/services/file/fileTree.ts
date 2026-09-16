@@ -1,4 +1,3 @@
-import { WORKSPACE_DATA_DIR } from '@my-agent-editor/shared';
 import { readDir, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { isAbsolutePath, joinPath } from './pathUtils';
 
@@ -8,12 +7,12 @@ export interface FileTreeEntry {
   isDirectory: boolean;
 }
 
+/** 文件树中隐藏的项；工作数据目录仍显示 */
 export const HIDDEN_ENTRIES = new Set([
   'node_modules',
   '.git',
   'target',
   'dist',
-  WORKSPACE_DATA_DIR,
 ]);
 
 export async function listDirectoryEntries(

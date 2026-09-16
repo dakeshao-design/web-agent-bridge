@@ -1,4 +1,4 @@
-/** Agent 工具 read_file / read_file_range / count_file_rows / write_file / append_file / edit_file_range / delete_file / delete_path / ls / grep / move_path / copy_path / run_powershell 的底层文件操作 */
+/** Agent 工具 read_file / read_file_range / count_file_rows / write_file / append_file / edit_file_range / edit_file / delete_file / delete_path / ls / grep / move_path / copy_path / run_powershell 的底层文件操作 */
 export interface IFileService {
   read(path: string): Promise<string>;
   write(path: string, content: string): Promise<void>;

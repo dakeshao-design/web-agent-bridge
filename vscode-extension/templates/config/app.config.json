@@ -20,7 +20,7 @@
     "count_file_rows": "allow",
     "write_file": "allow",
     "append_file": "allow",
-    "edit_file_range": "allow",
+    "edit_file_range": "deny",
     "delete_file": "allow",
     "delete_path": "allow",
     "move_path": "allow",

@@ -38,9 +38,18 @@ pnpm tauri dev
 
 ## Site config
 
-User config at runtime: `%APPDATA%\agent-editor\` (`config/` + `scripts/`).
+User config at runtime: `%USERPROFILE%\.web-agent-bridge\` (`config/` + `scripts/`).
 
 To add a site: copy the JS sample from `scripts/_bridge-template.md` to `scripts/xxx-bridge.js`, fill the `==BridgeScript==` header and site adapters.
+
+## Skills
+
+Put `SKILL.md` under:
+
+- Workspace: `{workspace}/.web-aget-bridge/skills/<name>/`
+- User: `%USERPROFILE%\.web-agent-bridge\skills\<name>\`
+
+Frontmatter: `name`, `description`, optional `inject` (`auto` | `always` | `none`). Agent loads via `read_skill` by name. Workspace wins on name clash. If `read_skill` is denied, skills are not disclosed.
 
 ## Layout
 

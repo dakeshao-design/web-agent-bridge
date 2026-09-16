@@ -30,22 +30,36 @@ export interface ChatLogEntry {
   meta?: ShellLogMeta;
 }
 
+const BRIDGE_ROLES: ReadonlySet<ChatRole> = new Set([
+  'bridge-request',
+  'bridge-response',
+  'bridge-copy',
+]);
+
+function isBridgeRole(role: ChatRole): boolean {
+  return BRIDGE_ROLES.has(role);
+}
+
 function formatDate(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function todayFileName(): string {
-  const d = new Date();
+function sessionStamp(d: Date): { date: string; time: string } {
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `agent-chat-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.log`;
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
+  };
 }
 
 export class ConversationLogService {
   private static readonly MAX_UI_ENTRIES = 200;
 
   private entries: ChatLogEntry[] = [];
-  private logFilePath = '';
+  private chatLogFilePath = '';
+  private runtimeLogFilePath = '';
+  private sessionAgentId = '';
   private initialized = false;
 
   constructor(private fileService: TauriFileService) {}
@@ -54,27 +68,58 @@ export class ConversationLogService {
     return this.entries;
   }
 
-  getLogFilePath(): string {
-    return this.logFilePath;
+  /** 对话日志：应用层 user/agent/shell */
+  getChatEntries(): ChatLogEntry[] {
+    return this.entries.filter((e) => !isBridgeRole(e.role));
   }
 
-  async init(): Promise<string> {
-    if (this.initialized) return this.logFilePath;
+  /** 运行日志：桥接层 request/response/copy */
+  getRuntimeEntries(): ChatLogEntry[] {
+    return this.entries.filter((e) => isBridgeRole(e.role));
+  }
 
+  getChatLogFilePath(): string {
+    return this.chatLogFilePath;
+  }
+
+  getRuntimeLogFilePath(): string {
+    return this.runtimeLogFilePath;
+  }
+
+  /** @deprecated 互換用；返回对话日志路径 */
+  getLogFilePath(): string {
+    return this.chatLogFilePath;
+  }
+
+  async beginSession(agentId: string): Promise<{ chat: string; runtime: string }> {
     const workspace = this.fileService.getWorkspaceRoot();
-    const fileName = todayFileName();
+    const { date, time } = sessionStamp(new Date());
+    const chatName = `${agentId}-chat-${date}-${time}.log`;
+    const runtimeName = `${agentId}-runtime-${date}-${time}.log`;
 
     if (workspace) {
       const logDir = `${workspace}/${WORKSPACE_DATA_DIR}/logs`.replace(/\\/g, '/');
-      this.logFilePath = `${logDir}/${fileName}`;
+      this.chatLogFilePath = `${logDir}/${chatName}`;
+      this.runtimeLogFilePath = `${logDir}/${runtimeName}`;
       await this.ensureDir(logDir);
     } else {
-      this.logFilePath = `logs/${fileName}`;
+      this.chatLogFilePath = `logs/${chatName}`;
+      this.runtimeLogFilePath = `logs/${runtimeName}`;
       await this.ensureDir('logs', BaseDirectory.AppData);
     }
 
+    this.sessionAgentId = agentId;
+    this.entries = [];
     this.initialized = true;
-    return this.logFilePath;
+    return { chat: this.chatLogFilePath, runtime: this.runtimeLogFilePath };
+  }
+
+  /** 尚无会话文件时，按 agentId 建档 */
+  async ensureSession(agentId: string): Promise<void> {
+    if (this.initialized && this.chatLogFilePath && this.runtimeLogFilePath) {
+      return;
+    }
+    await this.beginSession(agentId);
   }
 
   private async ensureDir(dir: string, baseDir?: BaseDirectory): Promise<void> {
@@ -116,7 +161,7 @@ export class ConversationLogService {
     source?: string,
     meta?: ShellLogMeta
   ): Promise<ChatLogEntry> {
-    await this.init();
+    await this.ensureSession(agentId);
 
     const entry: ChatLogEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -134,7 +179,8 @@ export class ConversationLogService {
       this.entries.splice(0, this.entries.length - ConversationLogService.MAX_UI_ENTRIES);
     }
     const block = this.formatBlock(entry);
-    await this.fileService.appendLog(this.logFilePath, block);
+    const path = isBridgeRole(role) ? this.runtimeLogFilePath : this.chatLogFilePath;
+    await this.fileService.appendLog(path, block);
 
     return entry;
   }
@@ -168,8 +214,22 @@ export class ConversationLogService {
     this.entries = [];
   }
 
+  clearChatDisplay(): void {
+    this.entries = this.entries.filter((e) => isBridgeRole(e.role));
+  }
+
+  clearRuntimeDisplay(): void {
+    this.entries = this.entries.filter((e) => !isBridgeRole(e.role));
+  }
+
   resetLogTarget(): void {
     this.initialized = false;
-    this.logFilePath = '';
+    this.chatLogFilePath = '';
+    this.runtimeLogFilePath = '';
+    this.sessionAgentId = '';
+  }
+
+  getSessionAgentId(): string {
+    return this.sessionAgentId;
   }
 }

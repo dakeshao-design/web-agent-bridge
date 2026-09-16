@@ -27,6 +27,7 @@ export const editFileRangeTool: AgentToolDefinition = {
     {
       name: 'content',
       description: '替换后的内容，空则删除该行范围。含代码围栏或工具关键字时用 <<<哨兵 包裹',
+      isFileContent: true,
     },
     {
       name: 'content_b64',

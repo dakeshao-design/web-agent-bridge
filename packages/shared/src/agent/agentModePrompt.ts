@@ -1,7 +1,8 @@
 import type { AgentToolDefinition } from '../tools/types.js';
 import type { ToolPermissionsConfig } from '../config/types.js';
 import { AGENT_TOOLS } from '../tools/registry.js';
-import { listToolsForPrompt } from './toolPermissions.js';
+import { listToolsForPrompt, getConfiguredPermission } from './toolPermissions.js';
+import { buildSkillsPromptSection, type AgentSkill } from './skills.js';
 
 /** 外层围栏用 6 个反引号，避免 content 内 ``` 提前闭合 */
 export const AGENT_MODE_TOOL_FORMAT = `\`\`\`\`\`\`call-tool
@@ -32,7 +33,7 @@ function buildFileLineLimitSection(readLimit?: number, writeLimit?: number): str
   const parts: string[] = [];
   if (writeLimit != null && writeLimit > 0) {
     parts.push(
-      `- 单次 \`write_file\` / \`append_file\` / \`edit_file_range\` 的 content 不要超过 **${writeLimit} 行**，只在换行处拆分`,
+      `- 单次 \`write_file\` / \`append_file\` / \`edit_file_range\` / \`edit_file\` 的 content 不要超过 **${writeLimit} 行**，只在换行处拆分`,
       `- 大文件：先 \`write_file\` 写第 1 段，再多次 \`append_file\`；每轮只调用一个工具并等待结果`,
       `- 若输出被截断且没有完整 \`END_TOOL\`，表示**未落盘**；须从小块 \`write_file\` 重新分片，不能从中间 \`append\``
     );
@@ -55,12 +56,16 @@ export function buildAgentModePrompt(
   readFileLineLimit?: number,
   toolPermissions?: ToolPermissionsConfig | null,
   writeFileLineLimit?: number,
-  siteAgentPrompt?: string
+  siteAgentPrompt?: string,
+  skills?: readonly AgentSkill[]
 ): string {
   void workspaceRoot;
   const tools = listToolsForPrompt(toolPermissions);
   const limitSection = buildFileLineLimitSection(readFileLineLimit, writeFileLineLimit);
   const site = siteAgentPrompt?.trim();
+  const skillsAllowed = getConfiguredPermission('read_skill', toolPermissions) !== 'deny';
+  const skillsSection =
+    skillsAllowed && skills?.length ? buildSkillsPromptSection(skills) : '';
 
   return `你处于 **Agent 模式** 下，当前工作区只有使用 \`call-tool\` 代码块调用工具才能访问。
 
@@ -106,6 +111,6 @@ END_ARG
 END_TOOL
 \`\`\`\`\`\`
 </tool_use_instructions>
-${site ? '\n${site}\n' : ''}
-本轮不要回复，等待用户输入。`;
+${skillsSection ? `\n${skillsSection}\n` : ''}
+本轮不要回复，等待用户输入。${site ? `\n\n${site}` : ''}`;
 }

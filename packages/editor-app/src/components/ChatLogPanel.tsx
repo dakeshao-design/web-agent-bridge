@@ -1,12 +1,17 @@
 import { useEffect, useRef } from 'react';
 import type { ChatLogEntry } from '../services/ConversationLogService';
 
+export type ChatLogPanelKind = 'chat' | 'runtime';
+
 interface ChatLogPanelProps {
   entries: ChatLogEntry[];
+  /** chat=应用层，runtime=桥接层 */
+  kind?: ChatLogPanelKind;
   /** 在 BottomPanel 内不绘制标题栏 */
   embedded?: boolean;
   logFilePath?: string;
   onClear?: () => void;
+  title?: string;
 }
 
 function formatTime(date: Date): string {
@@ -32,14 +37,35 @@ function formatRoleLabel(role: ChatLogEntry['role']): string {
   }
 }
 
-/** shell 在 PowerShell 标签页显示 */
-function visibleEntries(entries: ChatLogEntry[]): ChatLogEntry[] {
-  return entries.filter((e) => e.role !== 'shell');
+function isBridgeRole(role: ChatLogEntry['role']): boolean {
+  return (
+    role === 'bridge-request' ||
+    role === 'bridge-response' ||
+    role === 'bridge-copy'
+  );
 }
 
-export function ChatLogPanel({ entries, embedded, logFilePath, onClear }: ChatLogPanelProps) {
+function filterEntries(
+  entries: ChatLogEntry[],
+  kind: ChatLogPanelKind
+): ChatLogEntry[] {
+  if (kind === 'chat') {
+    return entries.filter((e) => !isBridgeRole(e.role));
+  }
+  return entries.filter((e) => isBridgeRole(e.role));
+}
+
+export function ChatLogPanel({
+  entries,
+  kind = 'chat',
+  embedded,
+  logFilePath,
+  onClear,
+  title = '对话日志',
+}: ChatLogPanelProps) {
   const listRef = useRef<HTMLDivElement>(null);
-  const shown = visibleEntries(entries);
+  const shown = filterEntries(entries, kind);
+  const emptyText = kind === 'chat' ? '暂无对话记录' : '暂无运行记录';
 
   useEffect(() => {
     const el = listRef.current;
@@ -50,7 +76,7 @@ export function ChatLogPanel({ entries, embedded, logFilePath, onClear }: ChatLo
   const list = (
     <div ref={listRef} className="chat-log-list">
       {shown.length === 0 ? (
-        <div className="chat-log-empty">暂无对话记录</div>
+        <div className="chat-log-empty">{emptyText}</div>
       ) : (
         shown.map((entry) => (
           <div key={entry.id} className={`chat-log-entry role-${entry.role}`}>
@@ -76,7 +102,7 @@ export function ChatLogPanel({ entries, embedded, logFilePath, onClear }: ChatLo
   return (
     <div className="chat-log-panel">
       <div className="chat-log-header">
-        <span className="chat-log-title">对话日志</span>
+        <span className="chat-log-title">{title}</span>
         {logFilePath && (
           <span className="chat-log-file" title={logFilePath}>
             {logFilePath}

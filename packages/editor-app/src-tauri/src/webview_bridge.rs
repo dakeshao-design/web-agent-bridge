@@ -210,6 +210,8 @@ impl AgentSyncState {
         self.baseline_user_index = baseline_user_index;
         self.bridge_stable_tracker = None;
         self.last_logged_tool_capture.clear();
+        // 发送后重新等待稳定，避免沿用旧 tracker
+        self.stable_tracker.clear();
     }
 }
 
@@ -260,18 +262,15 @@ pub struct WebviewBounds {
     pub height: f64,
 }
 
-/// 与 VS Code 扩展一致：%APPDATA%\agent-editor
+/// 与 VS Code 扩展一致：%USERPROFILE%\.web-agent-bridge
 fn user_config_root() -> PathBuf {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("agent-editor");
-    }
     if let Ok(home) = std::env::var("USERPROFILE") {
-        return PathBuf::from(home)
-            .join("AppData")
-            .join("Roaming")
-            .join("agent-editor");
+        return PathBuf::from(home).join(".web-agent-bridge");
     }
-    PathBuf::from("agent-editor")
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".web-agent-bridge");
+    }
+    PathBuf::from(".web-agent-bridge")
 }
 
 fn copy_if_missing(src: &PathBuf, dest: &PathBuf) {
@@ -972,8 +971,19 @@ fn reset_bridge_baseline_on_send(app: &AppHandle, label: &str, agent_id: &str) {
         Ok(value) => value,
         Err(_) => return,
     };
-    if let Some(sync_state) = sync_states.get_mut(agent_id) {
-        sync_state.on_send(baseline, baseline_user_index);
+    let sync_state = sync_states
+        .entry(agent_id.to_string())
+        .or_insert_with(AgentSyncState::new);
+    sync_state.on_send(baseline, baseline_user_index);
+    // 以发送时刻为对话基线。空会话 / loading 时只标 seeded，
+    // 避免结束后首包同时含 user+agent 时被 seed 吞掉不入日志。
+    if snap.loading {
+        sync_state.seeded = true;
+    } else {
+        seed_sync_from_snapshot(sync_state, &snap);
+        if !sync_state.seeded {
+            sync_state.seeded = true;
+        }
     }
 }
 

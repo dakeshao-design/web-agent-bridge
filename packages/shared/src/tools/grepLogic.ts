@@ -2,7 +2,7 @@ import { WORKSPACE_DATA_DIR } from '../constants.js';
 import type { FileOperation } from '../interfaces/IFileOperationParser.js';
 import type { IFileService } from '../interfaces/IFileService.js';
 
-/** 检索时跳过的目录名 */
+/** 搜索时跳过的目录名 */
 const SKIP_SEGMENTS = new Set([
   'node_modules',
   '.git',

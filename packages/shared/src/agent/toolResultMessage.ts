@@ -22,7 +22,9 @@ export function buildToolResultMessage(
 
   const hasLineMeta = result.total_lines !== undefined;
 
-  if (args.path) {
+  if (args.name && toolName === 'read_skill') {
+    lines.push(`name: ${args.name}`);
+  } else if (args.path) {
     lines.push(`path: ${args.path}`);
   }
   if (args.dest) {

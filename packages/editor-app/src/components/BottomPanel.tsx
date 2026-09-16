@@ -3,7 +3,7 @@ import { PowershellPanel, type PowershellViewEntry } from './PowershellPanel';
 import { FileOpLog, type FileOpLogEntry } from './FileOpLog';
 import type { ChatLogEntry } from '../services/ConversationLogService';
 
-export type BottomPanelTab = 'chat' | 'powershell' | 'fileops';
+export type BottomPanelTab = 'chat' | 'runtime' | 'powershell' | 'fileops';
 
 interface BottomPanelProps {
   activeTab: BottomPanelTab;
@@ -11,6 +11,9 @@ interface BottomPanelProps {
   chatEntries: ChatLogEntry[];
   chatLogFilePath: string;
   onClearChat: () => void;
+  runtimeEntries: ChatLogEntry[];
+  runtimeLogFilePath: string;
+  onClearRuntime: () => void;
   powershellEntries: PowershellViewEntry[];
   onClearPowershell: () => void;
   runningCount: number;
@@ -24,6 +27,9 @@ export function BottomPanel({
   chatEntries,
   chatLogFilePath,
   onClearChat,
+  runtimeEntries,
+  runtimeLogFilePath,
+  onClearRuntime,
   powershellEntries,
   onClearPowershell,
   runningCount,
@@ -33,9 +39,18 @@ export function BottomPanel({
   const onClear =
     activeTab === 'chat'
       ? onClearChat
-      : activeTab === 'powershell'
-        ? onClearPowershell
-        : onClearFileOps;
+      : activeTab === 'runtime'
+        ? onClearRuntime
+        : activeTab === 'powershell'
+          ? onClearPowershell
+          : onClearFileOps;
+
+  const activeLogPath =
+    activeTab === 'chat'
+      ? chatLogFilePath
+      : activeTab === 'runtime'
+        ? runtimeLogFilePath
+        : '';
 
   return (
     <div className="bottom-panel">
@@ -49,6 +64,15 @@ export function BottomPanel({
             onClick={() => onTabChange('chat')}
           >
             对话日志
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'runtime'}
+            className={`bottom-panel-tab${activeTab === 'runtime' ? ' active' : ''}`}
+            onClick={() => onTabChange('runtime')}
+          >
+            运行日志
           </button>
           <button
             type="button"
@@ -74,9 +98,9 @@ export function BottomPanel({
             文件操作
           </button>
         </div>
-        {activeTab === 'chat' && chatLogFilePath ? (
-          <span className="chat-log-file" title={chatLogFilePath}>
-            {chatLogFilePath}
+        {activeLogPath ? (
+          <span className="chat-log-file" title={activeLogPath}>
+            {activeLogPath}
           </span>
         ) : (
           <span className="bottom-panel-spacer" />
@@ -86,7 +110,9 @@ export function BottomPanel({
         </button>
       </div>
       {activeTab === 'chat' ? (
-        <ChatLogPanel entries={chatEntries} embedded />
+        <ChatLogPanel entries={chatEntries} kind="chat" embedded />
+      ) : activeTab === 'runtime' ? (
+        <ChatLogPanel entries={runtimeEntries} kind="runtime" embedded />
       ) : activeTab === 'powershell' ? (
         <PowershellPanel entries={powershellEntries} />
       ) : (

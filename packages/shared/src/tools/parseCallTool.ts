@@ -1,5 +1,6 @@
 import type { FileOperation } from '../interfaces/IFileOperationParser.js';
-import { parseToolCall } from './registry.js';
+import { getToolByName, parseToolCall } from './registry.js';
+import type { AgentToolDefinition } from './types.js';
 
 const CALL_TOOL_FENCED = /```call-tool\s*\n([\s\S]*?)```/gi;
 const CALL_TOOL_RAW = /BEGIN_TOOL:\s*(\S+)\s*\n([\s\S]*?)END_TOOL/gi;
@@ -156,12 +157,23 @@ interface ParsedToolCall {
   args: Record<string, string>;
 }
 
-function parseToolArgs(block: string): Record<string, string> {
+/** 判断参数是否为文件内容（不 trim） */
+function isFileContentArg(tool: AgentToolDefinition | undefined, argName: string): boolean {
+  if (!tool) return false;
+  if (tool.isFileContentArg?.(argName)) return true;
+  return tool.args.some((a) => a.name === argName && a.isFileContent === true);
+}
+
+function parseToolArgs(block: string, toolName: string): Record<string, string> {
+  const tool = getToolByName(toolName);
   const args: Record<string, string> = {};
   const argPattern = /BEGIN_ARG:\s*(\S+)\s*\n([\s\S]*?)\nEND_ARG/gi;
   let match: RegExpExecArray | null;
   while ((match = argPattern.exec(block)) !== null) {
-    args[match[1]] = match[2].trim();
+    const argName = match[1];
+    const raw = match[2];
+    // 文件内容保留首尾空白；其它参数 trim
+    args[argName] = isFileContentArg(tool, argName) ? raw : raw.trim();
   }
   return args;
 }
@@ -177,7 +189,7 @@ function parseToolBlock(block: string, toolName?: string): ParsedToolCall | null
     name = toolMatch[1];
   }
 
-  return { toolName: name, args: parseToolArgs(trimmed) };
+  return { toolName: name, args: parseToolArgs(trimmed, name) };
 }
 
 function toFileOperation(call: ParsedToolCall): FileOperation | null {
