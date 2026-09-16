@@ -2,7 +2,7 @@
   "name": "webagent-bridge",
   "displayName": "WAB - Web Agent Bridge",
   "description": "侧栏 Agent 面板 + 静默 WebView2 Host，通过 call-tool 操作工作区文件",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "webagent",
   "private": true,
   "icon": "media/icon.png",

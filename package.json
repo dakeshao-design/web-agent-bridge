@@ -1,7 +1,7 @@
 {
   "name": "my-agent-editor",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "scripts": {
     "dev": "pnpm --filter WABEditor dev",
     "build": "pnpm -r build",

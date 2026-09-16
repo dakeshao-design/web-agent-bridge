@@ -1,6 +1,6 @@
 {
   "name": "agent-host",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "静默 WebView2 Agent Host。复用 WABEditor 的 webview_bridge，经 AGENT_HOST=1 启动。",
   "scripts": {
