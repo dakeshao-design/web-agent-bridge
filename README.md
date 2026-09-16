@@ -64,4 +64,4 @@ config/                 # app defaults / templates
 
 ## License
 
-Private / unpublished unless stated otherwise.
+MIT
