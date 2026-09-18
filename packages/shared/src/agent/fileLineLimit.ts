@@ -31,25 +31,6 @@ export function parseFileLineLimitsFromBridgeScript(source: string): FileLineLim
   return { read, write };
 }
 
-/** 解析可选 SITE_AGENT_PROMPT；空白视为未声明 */
-export function parseSiteAgentPromptFromBridgeScript(source: string): string | undefined {
-  const m = source.match(
-    /\bSITE_AGENT_PROMPT\s*=\s*(?:`([\s\S]*?)`|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')/
-  );
-  if (!m) return undefined;
-  let raw = m[1] ?? m[2] ?? m[3] ?? '';
-  if (m[2] != null || m[3] != null) {
-    raw = raw.replace(/\\([\\'"nrt])/g, (_, ch: string) => {
-      if (ch === 'n') return '\n';
-      if (ch === 'r') return '\r';
-      if (ch === 't') return '\t';
-      return ch;
-    });
-  }
-  const trimmed = raw.trim();
-  return trimmed ? trimmed : undefined;
-}
-
 /** 与 read_file 一致的行数统计 */
 export function countContentLines(content: string): number {
   if (content.length === 0) return 0;

@@ -38,7 +38,7 @@ export interface AgentConfig {
   readFileLineLimit?: number;
   /** 头注释 @writeFileLineLimit；提示用，工具侧不强制 */
   writeFileLineLimit?: number;
-  /** 从 *-bridge.js 的 SITE_AGENT_PROMPT 解析；注入 Agent 模式提示词末尾 */
+  /** 头注释 @sitePrompt；注入 Agent 模式提示词末尾 */
   siteAgentPrompt?: string;
 }
 

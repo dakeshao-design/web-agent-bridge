@@ -112,5 +112,6 @@ END_TOOL
 \`\`\`\`\`\`
 </tool_use_instructions>
 ${skillsSection ? `\n${skillsSection}\n` : ''}
-本轮不要回复，等待用户输入。${site ? `\n\n${site}` : ''}`;
+${site ? `\n\n${site}` : ''}
+本轮不要回复，等待用户输入。`;
 }

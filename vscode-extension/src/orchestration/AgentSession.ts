@@ -21,7 +21,6 @@ import {
   mergeToolPermissions,
   buildSelectionMessage,
   parseFileLineLimitsFromBridgeScript,
-  parseSiteAgentPromptFromBridgeScript,
   findLatestCallToolSource,
   POWERSHELL_PROGRESS_INTERVAL_MS,
   parsePowershellWaitDecision,
@@ -304,12 +303,10 @@ export class AgentSession {
         try {
           const src = await this.configService.readBridgeScript(agent.injectScript);
           const limits = parseFileLineLimitsFromBridgeScript(src);
-          const siteAgentPrompt = parseSiteAgentPromptFromBridgeScript(src);
           return {
             ...agent,
             ...(limits.read != null ? { readFileLineLimit: limits.read } : {}),
             ...(limits.write != null ? { writeFileLineLimit: limits.write } : {}),
-            ...(siteAgentPrompt ? { siteAgentPrompt } : {}),
           };
         } catch {
           return agent;

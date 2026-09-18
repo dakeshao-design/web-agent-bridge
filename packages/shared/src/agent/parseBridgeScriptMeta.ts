@@ -30,6 +30,18 @@ function parseEnabled(raw: string | undefined): boolean | undefined {
   return undefined;
 }
 
+/** 头注释多行 @sitePrompt；空白视为未声明 */
+export function parseSiteAgentPromptFromHeader(blockBody: string): string | undefined {
+  const lines: string[] = [];
+  for (const line of blockBody.split(/\r?\n/)) {
+    const m = line.match(/\/\/\s*@sitePrompt(?:\s+(.*))?$/i);
+    if (!m) continue;
+    lines.push(m[1] ?? '');
+  }
+  const trimmed = lines.join('\n').trim();
+  return trimmed ? trimmed : undefined;
+}
+
 /**
  * 从桥接头注释解析 AgentConfig。
  * @description 仅文档，忽略不入配置。
@@ -97,6 +109,11 @@ export function parseBridgeScriptMeta(
   if (writeLimitRaw != null) {
     const n = Number.parseInt(writeLimitRaw, 10);
     if (Number.isFinite(n) && n > 0) agent.writeFileLineLimit = n;
+  }
+
+  const siteAgentPrompt = parseSiteAgentPromptFromHeader(block[1]);
+  if (siteAgentPrompt) {
+    agent.siteAgentPrompt = siteAgentPrompt;
   }
 
   return agent;

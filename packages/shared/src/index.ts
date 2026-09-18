@@ -43,13 +43,13 @@ export {
 } from './agent/skills.js';
 export {
   parseFileLineLimitsFromBridgeScript,
-  parseSiteAgentPromptFromBridgeScript,
   countContentLines,
   buildReadFileOverLimitMessage,
 } from './agent/fileLineLimit.js';
 export type { FileLineLimits } from './agent/fileLineLimit.js';
 export {
   parseBridgeScriptMeta,
+  parseSiteAgentPromptFromHeader,
   isSiteBridgeScriptFileName,
 } from './agent/parseBridgeScriptMeta.js';
 export type { BridgeScriptEntry } from './config/ConfigLoader.js';

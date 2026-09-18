@@ -10,7 +10,7 @@
 - 可选头注释 `@waitBeforeSend`：点击发送后等待毫秒（未设置按 300），若未 loading 且 lastUser/lastAgent 的 key 未变则重试，最多 10 次
 - 可选头注释 `@newChatOnload`：默认 false；true 时 `getComposer().input` 非 null 后通知 Host 注入 Agent 模式提示词（有 `newChatSession` 则先调用）
 - 可选头注释 `@inputMode` / `@typeStrategy` / `@typeDelayMs`
-- 可选 `SITE_AGENT_PROMPT`：站点专用提示词，注入 Agent 模式时原样追加到提示词末尾（不自动加标题）
+- 可选头注释 `@sitePrompt`：站点专用提示词，可多行且每行均以 `@sitePrompt` 开头；注入 Agent 模式时原样追加到提示词末尾（不自动加标题）
 - 可选 `newChatSession?(currentDocument)` → `Promise`：开启新会话，resolve 表示已就绪
 - `pollSnapshot(currentDocument)` → `{ loading, lastUser / lastAgent: { index, text } | null, responseRoot?: Element | null }`
   - `loading` 时 `lastUser` / `lastAgent` / `responseRoot` 均为 `null`
@@ -35,16 +35,13 @@
 // @writeFileLineLimit 100
 // @waitBeforeSend     300
 // @newChatOnload      false
+// @sitePrompt ## 站点专用说明
+// @sitePrompt ……
 // ==/BridgeScript==
 
 (function () {
   'use strict';
 
-  // 可选：原样追加到 Agent 模式提示词末尾
-  // const SITE_AGENT_PROMPT = `
-  // ## 站点专用说明
-  // ……
-  // `;
   const REGISTER_NS = '__agentEditorBridgeRegister';
 
   function isLoading(doc) {

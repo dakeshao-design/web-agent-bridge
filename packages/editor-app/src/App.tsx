@@ -23,7 +23,6 @@ import {
   mergeToolPermissions,
   buildSelectionMessage,
   parseFileLineLimitsFromBridgeScript,
-  parseSiteAgentPromptFromBridgeScript,
   extractCallToolSourceBlocks,
   findLatestCallToolSource,
   POWERSHELL_PROGRESS_INTERVAL_MS,
@@ -987,12 +986,10 @@ export default function App() {
             const scriptPath = agent.injectScript.replace(/^scripts\//, 'scripts/');
             const src = await fileService.readBridgeScript(scriptPath);
             const limits = parseFileLineLimitsFromBridgeScript(src);
-            const siteAgentPrompt = parseSiteAgentPromptFromBridgeScript(src);
             return {
               ...agent,
               ...(limits.read != null ? { readFileLineLimit: limits.read } : {}),
               ...(limits.write != null ? { writeFileLineLimit: limits.write } : {}),
-              ...(siteAgentPrompt ? { siteAgentPrompt } : {}),
             };
           } catch {
             return agent;
