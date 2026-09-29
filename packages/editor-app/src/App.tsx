@@ -891,7 +891,7 @@ export default function App() {
     handleAgentResponseRef.current = handleAgentResponse;
   }, [handleAgentResponse]);
 
-  // waiting 图标：composerInit / loading / poll 变化 10s / 本地工具 / PS 待确认
+  // waiting 图标：composerInit / loading / poll 变化 3s / 本地工具 / PS 待确认
   useEffect(() => {
     const timer = window.setInterval(() => {
       void (async () => {
@@ -924,7 +924,7 @@ export default function App() {
           if (!watch) {
             watch = {
               fingerprint,
-              changeSince: snap.loading ? Date.now() : Date.now() - 10000,
+              changeSince: snap.loading ? Date.now() : Date.now() - 3000,
             };
             waitingWatchRef.current.set(agentId, watch);
           } else if (fingerprint !== watch.fingerprint) {
@@ -932,7 +932,7 @@ export default function App() {
             watch.changeSince = Date.now();
           }
 
-          if (snap.loading || Date.now() - watch.changeSince < 10000) {
+          if (snap.loading || Date.now() - watch.changeSince < 3000) {
             setAgentStatus(agentId, 'waiting');
           } else if (status === 'waiting') {
             setAgentStatus(agentId, 'idle');

@@ -230,7 +230,7 @@ export class AgentSession {
       if (!watch) {
         watch = {
           fingerprint,
-          changeSince: snap.loading ? Date.now() : Date.now() - 10000,
+          changeSince: snap.loading ? Date.now() : Date.now() - 3000,
         };
         this.waitingWatch.set(agentId, watch);
       } else if (fingerprint !== watch.fingerprint) {
@@ -238,7 +238,7 @@ export class AgentSession {
         watch.changeSince = Date.now();
       }
 
-      if (snap.loading || Date.now() - watch.changeSince < 10000) {
+      if (snap.loading || Date.now() - watch.changeSince < 3000) {
         this.setStatus(agentId, 'waiting');
       } else if (status === 'waiting') {
         this.setStatus(agentId, 'idle');
