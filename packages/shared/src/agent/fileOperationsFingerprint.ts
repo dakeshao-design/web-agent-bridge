@@ -4,6 +4,17 @@ import { parseCallToolBlocks, stripMarkdownLineNumbers } from '../tools/parseCal
 
 export const SYSTEM_MARKER = '[SYSTEM]';
 
+/** 去重匹配用识别键，不含 content 等大字段 */
+const REPORT_MATCH_KEYS = [
+  'path',
+  'dest',
+  'name',
+  'command',
+  'pattern',
+  'start_line',
+  'end_line',
+] as const;
+
 function stableStringifyArgs(args: Record<string, string>): string {
   const sorted: Record<string, string> = {};
   for (const key of Object.keys(args).sort()) {
@@ -27,6 +38,7 @@ export function fileOperationsFingerprint(operations: FileOperation[]): string {
 export function isToolResultEcho(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.startsWith(SYSTEM_MARKER)) return true;
+  if (/^(ok|err|run)\s+`[^`]+`/m.test(trimmed)) return true;
   return /^工具\s*`[^`]+`\s*执行/.test(trimmed) || trimmed.includes('仍在执行。');
 }
 
@@ -35,8 +47,13 @@ function reportMatchesOperations(region: string, operations: FileOperation[]): b
     const tool = getToolByAction(op.action);
     const name = tool?.name ?? op.action;
     if (!region.includes(`\`${name}\``)) return false;
+    // 紧凑 ok/err/run，或旧文案「执行」
+    if (!/\b(ok|err|run)\s+`/.test(region) && !region.includes('执行')) {
+      return false;
+    }
     const args = tool?.toArgs(op) ?? { path: op.path };
-    for (const [key, value] of Object.entries(args)) {
+    for (const key of REPORT_MATCH_KEYS) {
+      const value = args[key];
       if (!value) continue;
       if (!region.includes(`${key}: ${value}`)) return false;
     }

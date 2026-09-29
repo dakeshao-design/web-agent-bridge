@@ -5,6 +5,18 @@ import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 export type { ToolApplyResult };
 
+/** 回传识别键白名单 */
+const ECHO_ARG_KEYS = [
+  'path',
+  'dest',
+  'command',
+  'start_line',
+  'end_line',
+  'pattern',
+  'glob',
+  'offset',
+] as const;
+
 export function fileActionToToolName(action: FileOperation['action']): string {
   return getToolByAction(action)?.name ?? action;
 }
@@ -16,47 +28,23 @@ export function buildToolResultMessage(
 ): string {
   const lines = [
     SYSTEM_MARKER,
-    `工具 \`${toolName}\` 执行${result.ok ? '成功' : '失败'}。`,
-    '',
+    `${result.ok ? 'ok' : 'err'} \`${toolName}\``,
   ];
 
   const hasLineMeta = result.total_lines !== undefined;
 
   if (args.name && toolName === 'read_skill') {
     lines.push(`name: ${args.name}`);
-  } else if (args.path) {
-    lines.push(`path: ${args.path}`);
   }
-  if (args.dest) {
-    lines.push(`dest: ${args.dest}`);
+
+  for (const key of ECHO_ARG_KEYS) {
+    if (key === 'path' && toolName === 'read_skill') continue;
+    if ((key === 'start_line' || key === 'end_line') && hasLineMeta) continue;
+    const value = args[key];
+    if (!value) continue;
+    lines.push(`${key}: ${value}`);
   }
-  if (args.deep) {
-    lines.push(`deep: ${args.deep}`);
-  }
-  if (args.filter) {
-    lines.push(`filter: ${args.filter}`);
-  }
-  if (args.command) {
-    lines.push(`command: ${args.command}`);
-  }
-  // 有 total_lines 时不回显请求 start/end_line，避免与 edited_range 重复
-  if (!hasLineMeta) {
-    if (args.start_line) {
-      lines.push(`start_line: ${args.start_line}`);
-    }
-    if (args.end_line) {
-      lines.push(`end_line: ${args.end_line}`);
-    }
-  }
-  if (args.pattern) {
-    lines.push(`pattern: ${args.pattern}`);
-  }
-  if (args.glob) {
-    lines.push(`glob: ${args.glob}`);
-  }
-  if (args.offset) {
-    lines.push(`offset: ${args.offset}`);
-  }
+
   if (result.total_lines !== undefined) {
     lines.push(`total_lines: ${result.total_lines}`);
   }
@@ -66,13 +54,17 @@ export function buildToolResultMessage(
   if (result.deleted_range) {
     lines.push(`deleted_range: ${result.deleted_range}`);
   }
-  // 成功且已有行元数据时不再输出重复 message
-  const skipMessage = result.ok && hasLineMeta;
-  if (result.message && !skipMessage) {
+  if (result.more_offset !== undefined) {
+    lines.push(`more_offset: ${result.more_offset}`);
+  }
+
+  // 成功：不回传冗余中文 message；失败：始终保留
+  if (!result.ok && result.message) {
     lines.push(`message: ${result.message}`);
   }
+
   if (result.content !== undefined) {
-    lines.push('', '```', result.content, '```');
+    lines.push('', result.content);
   }
 
   return lines.join('\n');

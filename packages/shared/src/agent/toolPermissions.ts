@@ -88,8 +88,7 @@ export function resolveEffectivePermission(
 export function buildDeniedToolResult(toolName: string): string {
   return [
     SYSTEM_MARKER,
-    `工具 \`${toolName}\` 执行被拒绝。`,
-    '',
+    `err \`${toolName}\``,
     'status: denied',
     `message: 工具 ${toolName} 已被禁止，未执行。`,
   ].join('\n');

@@ -37,10 +37,8 @@ export function buildUnknownToolResult(
   const names = unknownNames.length ? unknownNames.join(', ') : '(未知)';
   return [
     SYSTEM_MARKER,
-    `工具不存在: ${names}`,
-    '',
-    'status: error',
-    'message: 请使用下列可用工具之一，并按 call-tool 格式重新调用。',
+    `err \`unknown_tool\``,
+    `message: 工具不存在: ${names}。请使用下列可用工具之一，并按 call-tool 格式重新调用。`,
     '',
     '## 可用工具',
     '',

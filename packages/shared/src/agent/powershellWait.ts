@@ -14,20 +14,13 @@ export function buildPowershellProgressMessage(params: {
   const body = newOutput.trim() ? newOutput : '(本间隔无新增输出)';
   return [
     SYSTEM_MARKER,
-    '工具 `run_powershell` 仍在执行。',
-    '',
+    'run `run_powershell`',
     `command: ${command}`,
     `elapsed: ${elapsedSec}s`,
     '',
-    '新增控制台输出:',
-    '```',
     body,
-    '```',
     '',
-    '请选择:',
-    '- 回复「继续等待」→ 继续等待',
-    '- 回复「终止」→ 结束 PowerShell',
-    '- 直接继续对话或调用其他工具 → 跳过等待（无需写「跳过等待」）',
+    '回复「继续等待」|「终止」；其它回复或调工具→跳过等待',
   ].join('\n');
 }
 

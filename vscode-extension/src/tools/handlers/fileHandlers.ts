@@ -138,7 +138,12 @@ export const applyListFiles: FileToolHandler = async (op, ctx) => {
 export const applyGrep: FileToolHandler = async (op, ctx) => {
   const result = await runGrep(ctx.fileService, op);
   ctx.addLogEntry(op, 'applied', result.message);
-  return { ok: true, message: result.message, content: result.content };
+  return {
+    ok: true,
+    message: result.message,
+    content: result.content,
+    more_offset: result.truncated ? result.nextOffset : undefined,
+  };
 };
 
 export const applyReadSkill: FileToolHandler = async (op, ctx) => {

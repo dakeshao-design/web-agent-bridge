@@ -44,8 +44,7 @@ export function isIncompleteFromLastConversation(
 export function buildIncompleteCallToolHint(writeFileLineLimit?: number): string {
   const lines: string[] = [
     SYSTEM_MARKER,
-    'incomplete_call_tool',
-    'status: error',
+    'err `incomplete_call_tool`',
     'message: 工具调用不完整（缺少 END_TOOL 或 call-tool 未闭合），未执行、未落盘。',
   ];
   if (writeFileLineLimit != null && writeFileLineLimit > 0) {

@@ -7,6 +7,8 @@ export type ToolApplyResult = {
   total_lines?: number;
   edited_range?: string;
   deleted_range?: string;
+  /** grep 截断时下一页 offset */
+  more_offset?: number;
 };
 
 export interface AgentToolArgDefinition {
