@@ -2,7 +2,7 @@ import type { FileOperation } from '../interfaces/IFileOperationParser.js';
 import { getToolByAction } from '../tools/registry.js';
 import { parseCallToolBlocks, stripMarkdownLineNumbers } from '../tools/parseCallTool.js';
 
-export const REPORT_TOOL_MARKER = '[REPORT_TOOL]';
+export const SYSTEM_MARKER = '[SYSTEM]';
 
 function stableStringifyArgs(args: Record<string, string>): string {
   const sorted: Record<string, string> = {};
@@ -26,7 +26,7 @@ export function fileOperationsFingerprint(operations: FileOperation[]): string {
 /** 是否为工具结果回传文本 */
 export function isToolResultEcho(text: string): boolean {
   const trimmed = text.trim();
-  if (trimmed.startsWith(REPORT_TOOL_MARKER)) return true;
+  if (trimmed.startsWith(SYSTEM_MARKER)) return true;
   return /^工具\s*`[^`]+`\s*执行/.test(trimmed) || trimmed.includes('仍在执行。');
 }
 
@@ -69,10 +69,10 @@ function collectMatchingReportEnds(
   const ends: number[] = [];
   let from = 0;
   while (from < normalized.length) {
-    const idx = normalized.indexOf(REPORT_TOOL_MARKER, from);
+    const idx = normalized.indexOf(SYSTEM_MARKER, from);
     if (idx < 0) break;
-    const nextMarker = normalized.indexOf(REPORT_TOOL_MARKER, idx + REPORT_TOOL_MARKER.length);
-    const nextTool = normalized.indexOf('BEGIN_TOOL:', idx + REPORT_TOOL_MARKER.length);
+    const nextMarker = normalized.indexOf(SYSTEM_MARKER, idx + SYSTEM_MARKER.length);
+    const nextTool = normalized.indexOf('BEGIN_TOOL:', idx + SYSTEM_MARKER.length);
     let regionEnd = normalized.length;
     if (nextMarker >= 0) regionEnd = Math.min(regionEnd, nextMarker);
     if (nextTool >= 0) regionEnd = Math.min(regionEnd, nextTool);
@@ -80,13 +80,13 @@ function collectMatchingReportEnds(
     if (reportMatchesOperations(region, operations)) {
       ends.push(regionEnd);
     }
-    from = idx + REPORT_TOOL_MARKER.length;
+    from = idx + SYSTEM_MARKER.length;
   }
   return ends;
 }
 
 /**
- * 最近一次匹配的工具请求是否已在其后的 [REPORT_TOOL] 中回传。
+ * 最近一次匹配的工具请求是否已在其后的 [SYSTEM] 中回传。
  * 若请求出现在最近回传之后、且中间无其它工具，视为双通道重复，也视为已回传。
  */
 export function isToolCallAlreadyReported(

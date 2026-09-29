@@ -1,4 +1,4 @@
-import { runGrep, buildReadFileOverLimitMessage, countContentLines, buildEditFileRangeResultMeta, applyEditFileReplacements } from '@my-agent-editor/shared';
+import { runGrep, buildReadFileOverLimitMessage, countContentLines, buildEditFileRangeResultMeta, applyEditFileReplacements, filterListedNames } from '@my-agent-editor/shared';
 import type { FileToolHandler } from '../types';
 
 export const applyReadFile: FileToolHandler = async (op, ctx) => {
@@ -127,7 +127,8 @@ export const applyCopyPath: FileToolHandler = async (op, ctx) => {
 
 export const applyListFiles: FileToolHandler = async (op, ctx) => {
   const deep = op.deep ?? false;
-  const files = await ctx.fileService.listFiles(op.path, deep);
+  const listed = await ctx.fileService.listFiles(op.path, deep);
+  const files = filterListedNames(listed, op.filter);
   const content = files.join('\n');
   const message = `共 ${files.length} 项`;
   ctx.addLogEntry(op, 'applied', message);

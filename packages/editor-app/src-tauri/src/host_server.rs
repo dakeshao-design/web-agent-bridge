@@ -8,8 +8,9 @@ use tauri::{AppHandle, Listener, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::webview_bridge::{
-    agent_bridge_is_loading, create_agent_webview, fill_agent_message, hide_agent_webview,
-    new_agent_chat_session, send_agent_message, show_agent_webview, WebviewBounds, WebviewState,
+    agent_bridge_is_loading, agent_bridge_poll_snapshot, create_agent_webview, debug_eval_composer_ready, fill_agent_message,
+    hide_agent_webview, new_agent_chat_session, send_agent_message, show_agent_webview,
+    WebviewBounds, WebviewState,
 };
 
 const DEFAULT_PORT: &str = "9791";
@@ -258,7 +259,7 @@ fn handle(
                     bridge_config,
                 )
                 .await?;
-                // hidden：create 已屏外静默 + 启动同步，勿再 show/hide 闪窗
+                // hidden：create 时已静默启动并开始同步，勿用 show/hide 造成闪烁
                 if !hidden {
                     show_agent_webview(app2, label, bounds).await?;
                 }
@@ -338,6 +339,37 @@ fn handle(
                 agent_bridge_is_loading(app2, agent_id).await
             })?;
             json_ok(json!({ "ok": true, "loading": loading }))
+        }
+        (Method::Get, "/agents/poll-snapshot") => {
+            let agent_id = parse_query(url.split('?').nth(1).unwrap_or(""))
+                .get("agentId")
+                .cloned()
+                .unwrap_or_default();
+            if agent_id.is_empty() {
+                return Err("agentId is required".into());
+            }
+            let app2 = app.clone();
+            let snap = tauri::async_runtime::block_on(async move {
+                agent_bridge_poll_snapshot(app2, agent_id).await
+            })?;
+            json_ok(json!({
+                "ok": true,
+                "loading": snap.get("loading").cloned().unwrap_or(json!(false)),
+                "lastUser": snap.get("lastUser").cloned().unwrap_or(json!(null)),
+                "lastAgent": snap.get("lastAgent").cloned().unwrap_or(json!(null)),
+            }))
+        }
+        (Method::Get, "/agents/composer-ready") => {
+            let agent_id = parse_query(url.split('?').nth(1).unwrap_or(""))
+                .get("agentId")
+                .cloned()
+                .unwrap_or_default();
+            if agent_id.is_empty() {
+                return Err("agentId is required".into());
+            }
+            let label = format!("agent-{}", agent_id);
+            let ready = debug_eval_composer_ready(app, &label);
+            json_ok(json!({ "ok": true, "ready": ready }))
         }
         (Method::Post, "/agents/new-chat") => {
             let payload: AgentBody = parse_json(body)?;

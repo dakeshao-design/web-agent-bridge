@@ -47,6 +47,40 @@ export class AgentHostProcess {
     return bundled;
   }
 
+  private resolveHostCommand(cwd: string): { command: string; args: string[]; shell: boolean } {
+    const releaseExe = path.join(cwd, 'src-tauri', 'target', 'release', 'WABEditor.exe');
+    const debugExe = path.join(cwd, 'src-tauri', 'target', 'debug', 'WABEditor.exe');
+    const bundledExe = path.join(this.context.extensionPath, 'bin', 'agent-host.exe');
+    const inRepo = fs.existsSync(path.join(cwd, 'src-tauri'));
+
+    // 仓库开发：优先本机较新的编译产物，避免旧 release / bin 缺路由或协议不兼容
+    if (inRepo) {
+      const releaseOk = fs.existsSync(releaseExe);
+      const debugOk = fs.existsSync(debugExe);
+      if (releaseOk && debugOk) {
+        const releaseMtime = fs.statSync(releaseExe).mtimeMs;
+        const debugMtime = fs.statSync(debugExe).mtimeMs;
+        const newer = debugMtime >= releaseMtime ? debugExe : releaseExe;
+        return { command: newer, args: [], shell: false };
+      }
+      if (releaseOk) {
+        return { command: releaseExe, args: [], shell: false };
+      }
+      if (debugOk) {
+        return { command: debugExe, args: [], shell: false };
+      }
+      if (fs.existsSync(bundledExe)) {
+        return { command: bundledExe, args: [], shell: false };
+      }
+      return { command: 'pnpm', args: ['exec', 'tauri', 'dev'], shell: true };
+    }
+
+    if (fs.existsSync(bundledExe)) {
+      return { command: bundledExe, args: [], shell: false };
+    }
+    throw new Error('未找到 Agent Host 可执行文件（bin/agent-host.exe）');
+  }
+
   private start(): Promise<void> {
     return new Promise((resolve, reject) => {
       const cwd = this.resolveHostCwd();
@@ -57,31 +91,18 @@ export class AgentHostProcess {
         AGENT_HOST_TOKEN: this.token,
       };
 
-      const releaseDir = path.join(cwd, 'src-tauri', 'target', 'release');
-      const debugDir = path.join(cwd, 'src-tauri', 'target', 'debug');
-      const releaseExe = path.join(releaseDir, 'WABEditor.exe');
-      const debugExe = path.join(debugDir, 'WABEditor.exe');
-      const bundledExe = path.join(this.context.extensionPath, 'bin', 'agent-host.exe');
-
-      let command: string;
-      let args: string[] = [];
-
-      if (fs.existsSync(bundledExe)) {
-        command = bundledExe;
-      } else if (fs.existsSync(releaseExe)) {
-        command = releaseExe;
-      } else if (fs.existsSync(debugExe)) {
-        command = debugExe;
-      } else {
-        // 开发：用 pnpm tauri dev
-        command = 'pnpm';
-        args = ['exec', 'tauri', 'dev'];
+      let resolved: { command: string; args: string[]; shell: boolean };
+      try {
+        resolved = this.resolveHostCommand(cwd);
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+        return;
       }
 
-      this.child = spawn(command, args, {
-        cwd: command === 'pnpm' ? cwd : path.dirname(command),
+      this.child = spawn(resolved.command, resolved.args, {
+        cwd: resolved.shell ? cwd : path.dirname(resolved.command),
         env,
-        shell: command === 'pnpm',
+        shell: resolved.shell,
         stdio: 'ignore',
         windowsHide: true,
       });

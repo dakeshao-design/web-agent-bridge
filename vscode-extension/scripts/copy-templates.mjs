@@ -10,6 +10,7 @@ const dest = path.join(extRoot, 'templates');
 fs.rmSync(dest, { recursive: true, force: true });
 fs.mkdirSync(path.join(dest, 'config'), { recursive: true });
 fs.mkdirSync(path.join(dest, 'scripts'), { recursive: true });
+fs.mkdirSync(path.join(dest, 'skills'), { recursive: true });
 
 fs.copyFileSync(
   path.join(repoRoot, 'config', 'app.config.json'),
@@ -22,6 +23,11 @@ for (const name of fs.readdirSync(path.join(repoRoot, 'scripts'))) {
     path.join(repoRoot, 'scripts', name),
     path.join(dest, 'scripts', name)
   );
+}
+
+const skillReadme = path.join(repoRoot, 'skills', 'skill-readme.md');
+if (fs.existsSync(skillReadme)) {
+  fs.copyFileSync(skillReadme, path.join(dest, 'skills', 'skill-readme.md'));
 }
 
 console.log('[copy-templates] done ->', dest);

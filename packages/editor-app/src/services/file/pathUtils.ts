@@ -11,7 +11,7 @@ export function resolvePath(path: string, workspaceRoot: string): string {
   if (isAbsolutePath(path)) return path;
   if (workspaceRoot) {
     const sep = workspaceRoot.endsWith('\\') || workspaceRoot.endsWith('/') ? '' : '/';
-    return `${workspaceRoot}${sep}${path.replace(/\\/g, '/')}`;
+    return `${workspaceRoot}${sep}${path.replace(/\\/g, '/').replace(/^\.\//, '')}`;
   }
   return path;
 }

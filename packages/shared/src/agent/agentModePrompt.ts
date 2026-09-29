@@ -3,6 +3,10 @@ import type { ToolPermissionsConfig } from '../config/types.js';
 import { AGENT_TOOLS } from '../tools/registry.js';
 import { listToolsForPrompt, getConfiguredPermission } from './toolPermissions.js';
 import { buildSkillsPromptSection, type AgentSkill } from './skills.js';
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
+
+/** 合并发送时分隔 Agent 模式提示词与用户输入 */
+export const USER_MARKER = '[USER]';
 
 /** 外层围栏用 6 个反引号，避免 content 内 ``` 提前闭合 */
 export const AGENT_MODE_TOOL_FORMAT = `\`\`\`\`\`\`call-tool
@@ -57,7 +61,8 @@ export function buildAgentModePrompt(
   toolPermissions?: ToolPermissionsConfig | null,
   writeFileLineLimit?: number,
   siteAgentPrompt?: string,
-  skills?: readonly AgentSkill[]
+  skills?: readonly AgentSkill[],
+  options?: { omitWaitForUser?: boolean }
 ): string {
   void workspaceRoot;
   const tools = listToolsForPrompt(toolPermissions);
@@ -66,8 +71,10 @@ export function buildAgentModePrompt(
   const skillsAllowed = getConfiguredPermission('read_skill', toolPermissions) !== 'deny';
   const skillsSection =
     skillsAllowed && skills?.length ? buildSkillsPromptSection(skills) : '';
+  const waitLine = options?.omitWaitForUser ? '' : '\n本轮不要回复，等待用户输入。';
 
-  return `你处于 **Agent 模式** 下，当前工作区只有使用 \`call-tool\` 代码块调用工具才能访问。
+  return `${SYSTEM_MARKER}
+你处于 **Agent 模式** 下，当前工作区只有使用 \`call-tool\` 代码块调用工具才能访问。
 
 如果需要调用工具，严格遵守如下格式回复：
 
@@ -112,6 +119,5 @@ END_TOOL
 \`\`\`\`\`\`
 </tool_use_instructions>
 ${skillsSection ? `\n${skillsSection}\n` : ''}
-${site ? `\n\n${site}` : ''}
-本轮不要回复，等待用户输入。`;
+${site ? `\n\n${site}` : ''}${waitLine}`;
 }

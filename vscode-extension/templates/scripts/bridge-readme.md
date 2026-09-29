@@ -12,11 +12,12 @@
 - 可选头注释 `@inputMode` / `@typeStrategy` / `@typeDelayMs`
 - 可选头注释 `@sitePrompt`：站点专用提示词，可多行且每行均以 `@sitePrompt` 开头；注入 Agent 模式时原样追加到提示词末尾（不自动加标题）
 - 可选 `newChatSession?(currentDocument)` → `Promise`：开启新会话，resolve 表示已就绪
-- `pollSnapshot(currentDocument)` → `{ loading, lastUser / lastAgent: { index, text } | null, responseRoot?: Element | null }`
-  - `loading` 时 `lastUser` / `lastAgent` / `responseRoot` 均为 `null`
+- `pollSnapshot(currentDocument)` → `{ loading, lastUser / lastAgent: { index: string, text } | null, responseRoot?: Element | null }`
+  - `index` 为消息身份标识（字符串），禁止用大小比较控制顺序
+  - `loading` 为 true 时仍填充 `lastUser` / `lastAgent` / `responseRoot`；Host 在 loading 期间不同步工具调用
   - 查询一律用 `currentDocument`，禁止写死顶层 `document`
 - `getComposer?(currentDocument)` → `{ input, sendButton }`（仅 send/fill）
-- `findCallToolBlocks?(responseRoot)` → `Element[]`
+- `findCallToolBlocks?(responseRoot)` → `string[]`（含 BEGIN_TOOL 的工具代码文本）
 - `findCopyButtons?(responseRoot)` → `HTMLElement[]`（有则走复制读工具）
 - `resolveCurrentDocument?()` → `Document`（iframe 站解析聊天 frame）
 
@@ -51,9 +52,7 @@
 
   function pollSnapshot(currentDocument) {
     const doc = currentDocument || document;
-    if (isLoading(doc)) {
-      return { loading: true, lastUser: null, lastAgent: null, responseRoot: null };
-    }
+    const loading = isLoading(doc);
 
     const nodes = doc.querySelectorAll('[class*="markdown"], [class*="assistant"]');
     let lastAgent = null;
@@ -62,7 +61,7 @@
       const last = nodes[nodes.length - 1];
       const text = (last.innerText || last.textContent || '').trim();
       if (text) {
-        lastAgent = { index: nodes.length - 1, text };
+        lastAgent = { index: String(nodes.length - 1), text };
         responseRoot = last;
       }
     }
@@ -72,12 +71,12 @@
     for (let i = users.length - 1; i >= 0; i--) {
       const text = (users[i].innerText || users[i].textContent || '').trim();
       if (text) {
-        lastUser = { index: i, text };
+        lastUser = { index: String(i), text };
         break;
       }
     }
 
-    return { loading: false, lastUser, lastAgent, responseRoot };
+    return { loading, lastUser, lastAgent, responseRoot };
   }
 
   function getComposer(currentDocument) {
@@ -91,7 +90,7 @@
   function findCallToolBlocks(responseRoot) {
     const scope = responseRoot;
     if (!scope || !scope.querySelectorAll) return [];
-    const blocks = [];
+    const texts = [];
     const seen = new Set();
     const nodes = scope.querySelectorAll('pre, [class*="code-block"], [class*="codeBlock"]');
     for (let i = 0; i < nodes.length; i++) {
@@ -101,9 +100,9 @@
       const codeText = (codeEl.textContent || '').trim();
       if (!codeText.includes('BEGIN_TOOL')) continue;
       seen.add(block);
-      blocks.push(block);
+      texts.push(codeText);
     }
-    return blocks;
+    return texts;
   }
 
   // 可选：启用复制读工具时实现

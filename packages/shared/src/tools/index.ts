@@ -20,7 +20,7 @@ export { deleteFileTool } from './deleteFileTool.js';
 export { deletePathTool } from './deletePathTool.js';
 export { movePathTool } from './movePathTool.js';
 export { copyPathTool } from './copyPathTool.js';
-export { lsTool } from './lsTool.js';
+export { lsTool, filterListedNames } from './lsTool.js';
 export { grepTool } from './grepTool.js';
 export { runGrep } from './grepLogic.js';
 export { runPowershellTool } from './runPowershellTool.js';

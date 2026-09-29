@@ -17,17 +17,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   hostProcess = new AgentHostProcess(context);
   const bridge = new AgentHostBridge(hostProcess);
 
-  const autoStart = vscode.workspace.getConfiguration('webAgentBridge').get<boolean>('autoStartHost', true);
-  if (autoStart) {
-    try {
-      await hostProcess.ensureStarted();
-    } catch (err) {
-      vscode.window.showWarningMessage(
-        `Agent Host 未启动: ${err instanceof Error ? err.message : String(err)}。可稍后重试或手动运行 pnpm agent-host。`
-      );
-    }
-  }
-
+  // Host / Agent 站点仅在有工作区且 WAB 视图可见时由 session 延迟启动
   session = new AgentSession(context, configService, fileService, bridge, hostProcess);
   await session.init();
 

@@ -21,7 +21,7 @@
       pollIntervalMs: 1000,
       stableMs: 2000,
       responseBaseline: '',
-      responseBaselineKey: -1,
+      responseBaselineKey: '',
       inputMode: 'fill',
       typeDelayMs: 0,
       waitBeforeSend: 300,
@@ -44,6 +44,8 @@
       pendingCommLogs: [],
       pendingChatMessages: [],
       pendingResetBaseline: false,
+      // Host 程序化 clickSend 时抑制捕获，避免二次 reset 吞掉 call-tool
+      suppressSendCaptureReset: false,
       // null | 'running' | { ok, error? }
       newChatStatus: null,
       newChatOnload: false,
@@ -95,7 +97,7 @@
         const last = nodes[nodes.length - 1];
         const text = (last.innerText || last.textContent || '').trim();
         if (text) {
-          lastAgent = { index: 0, text };
+          lastAgent = { index: '0', text };
           responseRoot = last;
         }
       }
@@ -111,11 +113,9 @@
       if (!msg || typeof msg !== 'object') return null;
       const text = String(msg.text || '').trim();
       if (!text) return null;
-      const index = Number(msg.index);
-      return {
-        index: Number.isFinite(index) ? index : -1,
-        text,
-      };
+      const raw = msg.index != null ? msg.index : msg.key;
+      const index = raw == null || raw === '' ? '' : String(raw);
+      return { index, text };
     }
 
     function runPollSnapshot() {
@@ -134,17 +134,8 @@
         snap = defaultPollSnapshot(doc);
       }
 
-      if (snap.loading) {
-        return {
-          loading: true,
-          lastUser: null,
-          lastAgent: null,
-          responseRoot: null,
-        };
-      }
-
       return {
-        loading: false,
+        loading: !!snap.loading,
         lastUser: normalizeMessage(snap.lastUser),
         lastAgent: normalizeMessage(snap.lastAgent),
         responseRoot: snap.responseRoot || null,
@@ -156,10 +147,10 @@
       return {
         loading: !!s.loading,
         lastUser: s.lastUser
-          ? { index: Number(s.lastUser.index), text: String(s.lastUser.text || '') }
+          ? { index: String(s.lastUser.index ?? ''), text: String(s.lastUser.text || '') }
           : null,
         lastAgent: s.lastAgent
-          ? { index: Number(s.lastAgent.index), text: String(s.lastAgent.text || '') }
+          ? { index: String(s.lastAgent.index ?? ''), text: String(s.lastAgent.text || '') }
           : null,
       };
     }
@@ -466,10 +457,12 @@
     function snapshotTurnKeys(snap) {
       const s = snap && typeof snap === 'object' ? snap : {};
       const userKey =
-        s.lastUser && Number.isFinite(Number(s.lastUser.index)) ? Number(s.lastUser.index) : null;
+        s.lastUser && s.lastUser.index != null && s.lastUser.index !== ''
+          ? String(s.lastUser.index)
+          : null;
       const agentKey =
-        s.lastAgent && Number.isFinite(Number(s.lastAgent.index))
-          ? Number(s.lastAgent.index)
+        s.lastAgent && s.lastAgent.index != null && s.lastAgent.index !== ''
+          ? String(s.lastAgent.index)
           : null;
       return {
         loading: !!s.loading,
@@ -483,41 +476,49 @@
       const configured = Number(state.waitBeforeSend);
       const waitMs = Number.isFinite(configured) && configured > 0 ? configured : 300;
       const before = snapshotTurnKeys(runPollSnapshot());
+      state.suppressSendCaptureReset = true;
+      try {
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const btn = querySendButton();
+          if (btn) {
+            btn.click();
+          } else {
+            clickSendFallback();
+          }
 
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const btn = querySendButton();
-        if (btn) {
-          btn.click();
-        } else {
-          clickSendFallback();
+          await sleep(waitMs);
+          const after = snapshotTurnKeys(runPollSnapshot());
+          if (after.loading) return true;
+          if (after.userKey !== before.userKey || after.agentKey !== before.agentKey) {
+            return true;
+          }
         }
-
-        await sleep(waitMs);
-        const after = snapshotTurnKeys(runPollSnapshot());
-        if (after.loading) return true;
-        if (after.userKey !== before.userKey || after.agentKey !== before.agentKey) {
-          return true;
-        }
+        return false;
+      } finally {
+        state.suppressSendCaptureReset = false;
+        // Host 已在 send_agent_message 里 reset；清掉点击误置的 pending
+        state.pendingResetBaseline = false;
       }
-
-      return false;
     }
 
     function defaultFindCallToolBlocks(root) {
       const scope = root || resolveCurrentDocument();
-      const blocks = [];
+      if (!scope || !scope.querySelectorAll) return [];
+      const texts = [];
       const seen = new Set();
       const nodes = scope.querySelectorAll('pre, code, [class*="code-block"], [class*="codeBlock"]');
       for (let i = 0; i < nodes.length; i++) {
         const block = nodes[i];
         if (seen.has(block)) continue;
         seen.add(block);
-        const codeText = (block.textContent || '').trim();
+        const codeEl =
+          block.querySelector && (block.querySelector('code, pre') || block);
+        const codeText = ((codeEl && codeEl.textContent) || block.textContent || '').trim();
         if (codeText.includes('BEGIN_TOOL')) {
-          blocks.push(block);
+          texts.push(codeText);
         }
       }
-      return blocks;
+      return texts;
     }
 
     function findCallToolBlocks(root) {
@@ -525,7 +526,10 @@
       if (site && typeof site.findCallToolBlocks === 'function') {
         try {
           const result = site.findCallToolBlocks(root);
-          return Array.isArray(result) ? result : [];
+          if (!Array.isArray(result)) return [];
+          return result
+            .map((item) => (typeof item === 'string' ? item.trim() : ''))
+            .filter((text) => text.includes('BEGIN_TOOL'));
         } catch (err) {
           console.warn('[bridge] findCallToolBlocks failed', err);
           return [];
@@ -549,18 +553,6 @@
         console.warn('[bridge] findCopyButtons failed', err);
         return [];
       }
-    }
-
-    function findToolCodeText(root) {
-      const blocks = findCallToolBlocks(root);
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const block = blocks[i];
-        const codeEl =
-          block && block.querySelector ? block.querySelector('code, pre') || block : block;
-        const text = ((codeEl && codeEl.textContent) || (block && block.textContent) || '').trim();
-        if (text.includes('BEGIN_TOOL')) return text;
-      }
-      return '';
     }
 
     function getCallToolBlockRef(block) {
@@ -743,55 +735,58 @@
       if (snap.loading) return;
       const root = snap.responseRoot || resolveCurrentDocument();
 
-      // DOM 路径：有 findCallToolBlocks 即可，不依赖复制按钮
-      const domTool = findToolCodeText(root);
-      if (domTool.includes('BEGIN_TOOL')) {
-        pinToolTextIfValid(domTool);
-        logToolCaptureOnce('dom:' + domTool.length, 'dom', domTool, '');
+      // 有 findCopyButtons 时只走复制路径，不调用 findCallToolBlocks
+      if (hasFindCopyButtons()) {
+        const buttons = findCopyButtons(root);
+        if (!buttons.length) return;
+
+        const blockRef =
+          (buttons[buttons.length - 1] && getCallToolBlockRef(buttons[buttons.length - 1])) ||
+          'copy-btns:' + buttons.length;
+        if (blockRef && blockRef === state.copyReadBlockRef) return;
+        const failCount = state.copyReadFailCounts[blockRef] || 0;
+        if (failCount >= 5) return;
+
+        state.copyReadInFlight = true;
+        readToolTextViaCopyButtons(buttons)
+          .then((text) => {
+            if (text && text.includes('BEGIN_TOOL')) {
+              state.copiedToolText = text;
+              state.copiedToolAt = Date.now();
+              pinToolTextIfValid(text);
+              if (blockRef) {
+                state.copyReadBlockRef = blockRef;
+                delete state.copyReadFailCounts[blockRef];
+              }
+            } else if (blockRef) {
+              state.copyReadFailCounts[blockRef] = failCount + 1;
+            }
+          })
+          .finally(() => {
+            state.copyReadInFlight = false;
+          });
         return;
       }
 
-      if (!hasFindCopyButtons()) return;
-
-      const buttons = findCopyButtons(root);
-      if (!buttons.length) return;
-
-      const blockRef =
-        (buttons[buttons.length - 1] && getCallToolBlockRef(buttons[buttons.length - 1])) ||
-        'copy-btns:' + buttons.length;
-      if (blockRef && blockRef === state.copyReadBlockRef) return;
-      const failCount = state.copyReadFailCounts[blockRef] || 0;
-      if (failCount >= 5) return;
-
-      state.copyReadInFlight = true;
-      readToolTextViaCopyButtons(buttons)
-        .then((text) => {
-          if (text && text.includes('BEGIN_TOOL')) {
-            state.copiedToolText = text;
-            state.copiedToolAt = Date.now();
-            pinToolTextIfValid(text);
-            if (blockRef) {
-              state.copyReadBlockRef = blockRef;
-              delete state.copyReadFailCounts[blockRef];
-            }
-          } else if (blockRef) {
-            state.copyReadFailCounts[blockRef] = failCount + 1;
-          }
-        })
-        .finally(() => {
-          state.copyReadInFlight = false;
-        });
+      // 无复制按钮时走 DOM 扫块
+      const texts = findCallToolBlocks(root);
+      const domTool = texts.length ? texts[texts.length - 1] : '';
+      if (domTool.includes('BEGIN_TOOL')) {
+        pinToolTextIfValid(domTool);
+        logToolCaptureOnce('dom:' + domTool.length, 'dom', domTool, '');
+      }
     }
 
     function getCopyToolDebug() {
       const snap = runPollSnapshot();
       const root = snap.responseRoot || resolveCurrentDocument();
-      const blocks = findCallToolBlocks(root);
-      const buttons = hasFindCopyButtons() ? findCopyButtons(root) : [];
+      const copyEnabled = hasFindCopyButtons();
+      const blocks = copyEnabled ? [] : findCallToolBlocks(root);
+      const buttons = copyEnabled ? findCopyButtons(root) : [];
       const btn = buttons.length ? buttons[buttons.length - 1] : null;
       const copied = getCopiedToolTextIfFresh();
       return {
-        copyPathEnabled: hasFindCopyButtons(),
+        copyPathEnabled: copyEnabled,
         blockCount: blocks.length,
         copyButtonCount: buttons.length,
         hasCopyBtn: !!btn,
@@ -814,22 +809,25 @@
 
     function getLatestResponseMeta() {
       const s = runPollSnapshot();
-      const key = s.lastAgent ? Number(s.lastAgent.index) : -1;
+      const key = s.lastAgent ? String(s.lastAgent.index ?? '') : '';
       let text = s.lastAgent ? String(s.lastAgent.text || '') : '';
 
-      // Prefer clipboard/pin when copy path captured BEGIN_TOOL
+      // 复制/pin 优先：DOM 无完整 END_TOOL 时用扫块结果
       const copied = getCopiedToolTextIfFresh();
       if (copied) {
         text = copied;
       } else {
         const pinned = getPinnedToolTextIfFresh();
-        if (pinned && (!text || !text.includes('BEGIN_TOOL'))) {
+        if (
+          pinned &&
+          (!text || !text.includes('BEGIN_TOOL') || !/\bEND_TOOL\b/.test(text))
+        ) {
           text = pinned;
         }
       }
 
       return {
-        key: Number.isFinite(key) ? key : -1,
+        key,
         text,
         loading: !!s.loading,
       };
@@ -851,7 +849,7 @@
       state.pendingChatMessages.push({
         agentId,
         role,
-        key: key ?? Date.now(),
+        key: String(key ?? Date.now()),
         text,
       });
     }
@@ -986,6 +984,7 @@
           const text = readInputText(input).trim();
           if (!text || !state.agentId) return;
           postChatMessage(state.agentId, 'user', text, Date.now());
+          if (state.suppressSendCaptureReset) return;
           resetBridgeTracking(state.agentId);
         },
         true
@@ -1027,12 +1026,12 @@
 
         const meta = getLatestResponseMeta();
         const text = meta.text;
-        const key = Number.isFinite(meta.key) ? meta.key : -1;
+        const key = meta.key != null ? String(meta.key) : '';
         if (!text) return;
 
         if (!state.seenChange) {
           const hasNewKey =
-            state.responseBaselineKey >= 0 && key >= 0 && key > state.responseBaselineKey;
+            state.responseBaselineKey !== '' && key !== '' && key !== state.responseBaselineKey;
           if (hasNewKey) {
             state.seenChange = true;
             state.lastResponse = text;

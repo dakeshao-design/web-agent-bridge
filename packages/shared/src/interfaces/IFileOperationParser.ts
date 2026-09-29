@@ -8,6 +8,7 @@ export interface FileOperation {
   path: string;
   content?: string;
   deep?: boolean;
+  filter?: string;
   command?: string;
   start_line?: number;
   end_line?: number;

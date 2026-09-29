@@ -3,6 +3,7 @@ import { getToolByName } from '../tools/registry.js';
 import { stripMarkdownLineNumbers } from '../tools/parseCallTool.js';
 import { buildToolTable } from './agentModePrompt.js';
 import { listToolsForPrompt } from './toolPermissions.js';
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 const BEGIN_TOOL_NAME = /BEGIN_TOOL:\s*(\S+)/gi;
 
@@ -35,7 +36,7 @@ export function buildUnknownToolResult(
   const tools = listToolsForPrompt(toolPermissions);
   const names = unknownNames.length ? unknownNames.join(', ') : '(未知)';
   return [
-    '[REPORT_TOOL]',
+    SYSTEM_MARKER,
     `工具不存在: ${names}`,
     '',
     'status: error',

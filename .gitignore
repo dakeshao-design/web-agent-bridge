@@ -4,6 +4,6 @@ target/
 *.log
 .DS_Store
 Thumbs.db
-
-
+.cursor/
+.vscode/
 /private/

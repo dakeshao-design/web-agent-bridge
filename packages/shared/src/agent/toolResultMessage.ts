@@ -1,7 +1,7 @@
 import type { FileOperation } from '../interfaces/IFileOperationParser.js';
 import type { ToolApplyResult } from '../tools/types.js';
 import { getToolByAction } from '../tools/registry.js';
-import { REPORT_TOOL_MARKER } from './fileOperationsFingerprint.js';
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 export type { ToolApplyResult };
 
@@ -15,7 +15,7 @@ export function buildToolResultMessage(
   result: ToolApplyResult
 ): string {
   const lines = [
-    REPORT_TOOL_MARKER,
+    SYSTEM_MARKER,
     `工具 \`${toolName}\` 执行${result.ok ? '成功' : '失败'}。`,
     '',
   ];
@@ -32,6 +32,9 @@ export function buildToolResultMessage(
   }
   if (args.deep) {
     lines.push(`deep: ${args.deep}`);
+  }
+  if (args.filter) {
+    lines.push(`filter: ${args.filter}`);
   }
   if (args.command) {
     lines.push(`command: ${args.command}`);

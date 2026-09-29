@@ -2,6 +2,7 @@ import type { FileOperation } from '../interfaces/IFileOperationParser.js';
 import type { ToolPermissionMode, ToolPermissionsConfig } from '../config/types.js';
 import { AGENT_TOOLS, getToolByAction, getToolByName } from '../tools/registry.js';
 import { fileActionToToolName } from './toolResultMessage.js';
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 /** 默认权限：仅 run_powershell 为 ask，其余 allow */
 export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionsConfig = Object.fromEntries(
@@ -86,7 +87,7 @@ export function resolveEffectivePermission(
 
 export function buildDeniedToolResult(toolName: string): string {
   return [
-    '[REPORT_TOOL]',
+    SYSTEM_MARKER,
     `工具 \`${toolName}\` 执行被拒绝。`,
     '',
     'status: denied',

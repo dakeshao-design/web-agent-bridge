@@ -37,8 +37,9 @@
     ],
     "resources": {
       "../../../config/app.config.json": "config/app.config.json",
-      "../../../scripts/_bridge-template.md": "scripts/_bridge-template.md",
-      "../../../scripts/bridge-default.js": "scripts/bridge-default.js"
+      "../../../scripts/bridge-readme.md": "scripts/bridge-readme.md",
+      "../../../scripts/bridge-default.js": "scripts/bridge-default.js",
+      "../../../skills/skill-readme.md": "skills/skill-readme.md"
     }
   },
   "plugins": {}

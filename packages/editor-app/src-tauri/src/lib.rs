@@ -14,7 +14,7 @@ use shell::{
     start_powershell, PowershellState,
 };
 use webview_bridge::{
-    agent_bridge_is_loading, agent_composer_ready, click_agent_send, create_agent_webview, emit_agent_chat_message,
+    agent_bridge_is_loading, agent_bridge_poll_snapshot, agent_composer_ready, click_agent_send, create_agent_webview, emit_agent_chat_message,
     emit_bridge_comm_log, fill_agent_message, get_user_config_root, hide_agent_webview,
     list_bridge_scripts, new_agent_chat_session, peek_agent_response, poll_agent_response,
     push_agent_bridge_config, read_bridge_script, read_config_file, reset_agent_bridge_tracking,
@@ -38,6 +38,11 @@ pub fn is_admin_mode() -> bool {
 #[tauri::command(rename = "is_admin_mode")]
 fn is_admin_mode_cmd() -> bool {
     is_admin_mode()
+}
+
+#[tauri::command(rename = "is_agent_host_mode")]
+fn is_agent_host_mode_cmd() -> bool {
+    is_agent_host_mode()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -75,9 +80,11 @@ pub fn run() {
             peek_agent_response,
             poll_agent_response,
             agent_bridge_is_loading,
+            agent_bridge_poll_snapshot,
             agent_composer_ready,
             new_agent_chat_session,
             is_admin_mode_cmd,
+            is_agent_host_mode_cmd,
         ])
         .setup(move |app| {
             let _ = get_user_config_root(app.handle().clone());

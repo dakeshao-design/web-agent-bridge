@@ -1,4 +1,5 @@
 import { parseCallToolBlocks } from '../tools/parseCallTool.js';
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 /** 发现不完整后等待对话无变化再提示 */
 export const INCOMPLETE_CALL_TOOL_CONFIRM_MS = 30_000;
@@ -42,7 +43,8 @@ export function isIncompleteFromLastConversation(
 /** 截断未落盘时回传给 Agent 的提示 */
 export function buildIncompleteCallToolHint(writeFileLineLimit?: number): string {
   const lines: string[] = [
-    '[REPORT_TOOL] incomplete_call_tool',
+    SYSTEM_MARKER,
+    'incomplete_call_tool',
     'status: error',
     'message: 工具调用不完整（缺少 END_TOOL 或 call-tool 未闭合），未执行、未落盘。',
   ];

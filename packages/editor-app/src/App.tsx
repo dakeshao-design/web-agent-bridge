@@ -36,6 +36,7 @@ import {
   type ToolPermissionsConfig,
   type AgentSkill,
   findSkillByName,
+  pollSnapshotFingerprint,
 } from '@my-agent-editor/shared';
 import { ask, message } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -152,6 +153,9 @@ export default function App() {
   const toolPermissionsRef = useRef<ToolPermissionsConfig>(mergeToolPermissions());
   const skillsRef = useRef<AgentSkill[]>([]);
   const adminModeRef = useRef(false);
+  /** Host 静默进程：工具由 VS Code 扩展执行，主窗勿再处理 call-tool */
+  const agentHostModeRef = useRef(false);
+  const [agentHostReady, setAgentHostReady] = useState(false);
   const settingsOpenRef = useRef(false);
   const debugDialogOpenRef = useRef(false);
   const incompleteHintRef = useRef<Set<string>>(new Set());
@@ -165,15 +169,16 @@ export default function App() {
     new Map<
       string,
       {
-        sawLoading: boolean;
-        consecutiveNotLoading: number;
-        lastText: string;
-        textStableSince: number;
+        fingerprint: string;
+        changeSince: number;
       }
     >()
   );
+  /** 首次建站：输入框未就绪前保持 waiting */
+  const composerInitPendingRef = useRef(new Set<string>());
+  const composerInitGenRef = useRef(new Map<string, number>());
   const handleAgentResponseRef = useRef<
-    (agentId: string, text: string, key?: number, opts?: { force?: boolean }) => Promise<void>
+    (agentId: string, text: string, key?: string, opts?: { force?: boolean }) => Promise<void>
   >(async () => undefined);
 
   useEffect(() => {
@@ -187,6 +192,15 @@ export default function App() {
       })
       .catch(() => {
         adminModeRef.current = false;
+      });
+    void invoke<boolean>('is_agent_host_mode')
+      .then((v) => {
+        agentHostModeRef.current = !!v;
+        setAgentHostReady(true);
+      })
+      .catch(() => {
+        agentHostModeRef.current = false;
+        setAgentHostReady(true);
       });
   }, []);
 
@@ -216,22 +230,20 @@ export default function App() {
 
   const setAgentStatus = useCallback(
     (agentId: string, status: AgentStatus) => {
+      // 找输入框完成前不允许回 idle
+      if (status === 'idle' && composerInitPendingRef.current.has(agentId)) return;
       setAgentStatuses((prev) => {
         if (prev[agentId] === status) return prev;
         return { ...prev, [agentId]: status };
       });
       if (status === 'waiting') {
-        waitingWatchRef.current.set(agentId, {
-          sawLoading: false,
-          consecutiveNotLoading: 0,
-          lastText: lastAgentText(agentId),
-          textStableSince: Date.now(),
-        });
-      } else {
-        waitingWatchRef.current.delete(agentId);
+        const watch = waitingWatchRef.current.get(agentId);
+        if (watch) {
+          watch.changeSince = Date.now();
+        }
       }
     },
-    [lastAgentText]
+    []
   );
 
   const publishLastFileOp = useCallback(
@@ -255,8 +267,10 @@ export default function App() {
       return path.replace(/\\/g, '/');
     }
     const root = workspaceRoot.replace(/\\/g, '/').replace(/\/$/, '');
-    if (!root) return path;
-    return `${root}/${path.replace(/\\/g, '/')}`;
+    if (!root) {
+      throw new Error('工作区未打开：相对路径无法解析，请先打开文件夹');
+    }
+    return `${root}/${path.replace(/\\/g, '/').replace(/^\.\//, '')}`;
   }, [workspaceRoot]);
 
   const handleContentChange = useCallback((newContent: string) => {
@@ -425,25 +439,20 @@ export default function App() {
   );
 
   const handleChatMessage = useCallback(
-    async (agentId: string, role: 'user' | 'agent', key: number, text: string) => {
+    async (agentId: string, role: 'user' | 'agent', key: string, text: string) => {
       incompleteConfirmRef.current.onContentChange(agentId, text);
 
       if (role === 'agent') {
         const dedupeKey = `${agentId}:agent:${key}`;
         const prevText = loggedAgentTextsRef.current.get(dedupeKey);
-        if (key >= 0 && loggedChatKeysRef.current.has(dedupeKey)) {
+        if (key !== '' && loggedChatKeysRef.current.has(dedupeKey)) {
           if (!prevText || prevText === text) {
             return;
           }
-          // 同 key 下 tool 内容变化时再处理
-          const toolChanged = text.includes('BEGIN_TOOL') && text !== prevText;
-          const grewMuch = text.length > prevText.length + 40;
-          if (!toolChanged && !grewMuch) {
-            return;
-          }
+          // 同 key 文本变化则再写入
           loggedChatKeysRef.current.delete(dedupeKey);
         }
-        if (key >= 0) {
+        if (key !== '') {
           loggedChatKeysRef.current.add(dedupeKey);
           loggedAgentTextsRef.current.set(dedupeKey, text);
         }
@@ -452,7 +461,7 @@ export default function App() {
       }
 
       const dedupeKey = `${agentId}:user:${key}`;
-      if (key >= 0 && loggedChatKeysRef.current.has(dedupeKey)) {
+      if (key !== '' && loggedChatKeysRef.current.has(dedupeKey)) {
         return;
       }
 
@@ -461,11 +470,11 @@ export default function App() {
         .reverse()
         .find((entry) => entry.role === 'user' && entry.agentId === agentId);
       if (lastUser && lastUser.content.trim() === text.trim()) {
-        if (key >= 0) loggedChatKeysRef.current.add(dedupeKey);
+        if (key !== '') loggedChatKeysRef.current.add(dedupeKey);
         return;
       }
 
-      if (key >= 0) loggedChatKeysRef.current.add(dedupeKey);
+      if (key !== '') loggedChatKeysRef.current.add(dedupeKey);
       await logUserMessage(agentId, text, 'WebView');
     },
     [logUserMessage, logAgentMessage]
@@ -485,7 +494,10 @@ export default function App() {
   );
 
   const handleAgentResponse = useCallback(
-    async (agentId: string, text: string, key?: number, opts?: { force?: boolean }) => {
+    async (agentId: string, text: string, key?: string, opts?: { force?: boolean }) => {
+      // Host 模式下由 VS Code 扩展执行工具，避免相对路径落到 AppData
+      if (agentHostModeRef.current) return;
+
       const force = !!opts?.force;
       if (!force) {
         const pending = pendingPowershellDecisionRef.current.get(agentId);
@@ -501,7 +513,7 @@ export default function App() {
       const parser = parserRef.current;
       const callToolParser = callToolParserRef.current;
       if (!parser) {
-        setAgentStatus(agentId, 'idle');
+        setAgentStatus(agentId, 'waiting');
         return;
       }
 
@@ -512,7 +524,7 @@ export default function App() {
 
       if (operations.length === 0) {
         if (force) {
-          setAgentStatus(agentId, 'idle');
+          setAgentStatus(agentId, 'waiting');
           return;
         }
         // 会话/桥接定稿都会进入；未知工具优先于缺 END_TOOL
@@ -526,13 +538,13 @@ export default function App() {
             await sendToolResultToAgent(agentId, hint);
             setAgentStatus(agentId, 'waiting');
           } else {
-            setAgentStatus(agentId, 'idle');
+            setAgentStatus(agentId, 'waiting');
           }
           return;
         }
 
         // 缺 END_TOOL 仅桥接定稿通道 key=-1，避免流式误报
-        if (key === -1 && hasIncompleteCallTool(text)) {
+        if (key === '' && hasIncompleteCallTool(text)) {
           const lastAgent = [...conversationLogService.getEntries()]
             .reverse()
             .find((entry) => entry.agentId === agentId && entry.role === 'agent')?.content;
@@ -563,7 +575,7 @@ export default function App() {
         } else {
           incompleteConfirmRef.current.onContentChange(agentId, text);
         }
-        setAgentStatus(agentId, 'idle');
+        setAgentStatus(agentId, 'waiting');
         return;
       }
 
@@ -593,7 +605,7 @@ export default function App() {
         const transcript =
           lastEntry === text || history.includes(text) ? history : `${history}\n${text}`;
         if (isToolCallAlreadyReported(transcript, operations)) {
-          setAgentStatus(agentId, 'idle');
+          setAgentStatus(agentId, 'waiting');
           return;
         }
       }
@@ -602,7 +614,16 @@ export default function App() {
       if (!force) {
         inflightToolOpsRef.current.add(inflightKey);
       }
-      let awaitAgentReply = false;
+
+      // 无工作区时不执行工具（Host 静默进程亦走此分支，交由 VS Code 扩展处理）
+      const root = workspaceRoot.trim();
+      if (!root) {
+        if (!force) {
+          inflightToolOpsRef.current.delete(inflightKey);
+        }
+        setAgentStatus(agentId, 'waiting');
+        return;
+      }
 
       try {
       for (const op of operations) {
@@ -621,7 +642,6 @@ export default function App() {
           publishLastFileOp(op, 'error', '权限禁止');
           await logUserMessage(agentId, denied, '工具结果');
           await sendToolResultToAgent(agentId, denied);
-          awaitAgentReply = true;
           continue;
         }
         if (effective === 'ask') {
@@ -655,7 +675,6 @@ export default function App() {
               agentId,
               buildToolResultFromOperation(op, result)
             );
-            awaitAgentReply = true;
             continue;
           }
 
@@ -740,7 +759,6 @@ export default function App() {
               agentId,
               buildToolResultFromOperation(op, result)
             );
-            awaitAgentReply = true;
           };
 
           let skippedReply: string | undefined;
@@ -782,7 +800,6 @@ export default function App() {
                   newOutput: neu,
                 })
               );
-              awaitAgentReply = true;
 
               const reply = await new Promise<string | null>((resolve) => {
                 const prev = pendingPowershellDecisionRef.current.get(agentId);
@@ -847,7 +864,6 @@ export default function App() {
         const toolResultMessage = buildToolResultFromOperation(op, result);
         await logUserMessage(agentId, toolResultMessage, '工具结果');
         await sendToolResultToAgent(agentId, toolResultMessage);
-        awaitAgentReply = true;
       }
       } finally {
         if (!force) {
@@ -855,7 +871,7 @@ export default function App() {
         }
       }
 
-      setAgentStatus(agentId, awaitAgentReply ? 'waiting' : 'idle');
+      setAgentStatus(agentId, 'waiting');
     },
     [
       addLogEntry,
@@ -875,63 +891,57 @@ export default function App() {
     handleAgentResponseRef.current = handleAgentResponse;
   }, [handleAgentResponse]);
 
-  // waiting 图标：isLoading 结束或对话安定 3s 且无工具时清为 idle
+  // waiting 图标：composerInit / loading / poll 变化 10s / 本地工具 / PS 待确认
   useEffect(() => {
     const timer = window.setInterval(() => {
       void (async () => {
         const statuses = agentStatusesRef.current;
-        for (const [agentId, status] of Object.entries(statuses)) {
-          if (status !== 'waiting') continue;
+        const ids = new Set<string>([
+          ...agentsRef.current.map((a) => a.id),
+          ...Object.keys(statuses),
+        ]);
+        for (const agentId of ids) {
+          const status = statuses[agentId];
+          if (status === 'error' || status === 'sending') continue;
 
-          const loading = await agentBridge.isLoading(agentId);
-          let watch = waitingWatchRef.current.get(agentId);
-          if (!watch) {
-            watch = {
-              sawLoading: false,
-              consecutiveNotLoading: 0,
-              lastText: lastAgentText(agentId),
-              textStableSince: Date.now(),
-            };
-            waitingWatchRef.current.set(agentId, watch);
-          }
-
-          const text = lastAgentText(agentId);
-          if (text !== watch.lastText) {
-            watch.lastText = text;
-            watch.textStableSince = Date.now();
-          }
-
-          if (loading) {
-            watch.sawLoading = true;
-            watch.consecutiveNotLoading = 0;
-            watch.textStableSince = Date.now();
+          if (composerInitPendingRef.current.has(agentId)) {
+            setAgentStatus(agentId, 'waiting');
             continue;
-          }
-
-          if (watch.sawLoading) {
-            watch.consecutiveNotLoading += 1;
-            if (watch.consecutiveNotLoading >= 2) {
-              setAgentStatus(agentId, 'idle');
-              continue;
-            }
           }
 
           const hasInflight = [...inflightToolOpsRef.current].some((k) =>
             k.startsWith(`${agentId}:`)
           );
           const hasPendingPs = pendingPowershellDecisionRef.current.has(agentId);
-          if (
-            !hasInflight &&
-            !hasPendingPs &&
-            Date.now() - watch.textStableSince >= 3000
-          ) {
+          if (hasInflight || hasPendingPs) {
+            setAgentStatus(agentId, 'waiting');
+            continue;
+          }
+
+          const snap = await agentBridge.getPollSnapshot(agentId);
+          const fingerprint = pollSnapshotFingerprint(snap);
+          let watch = waitingWatchRef.current.get(agentId);
+          if (!watch) {
+            watch = {
+              fingerprint,
+              changeSince: snap.loading ? Date.now() : Date.now() - 10000,
+            };
+            waitingWatchRef.current.set(agentId, watch);
+          } else if (fingerprint !== watch.fingerprint) {
+            watch.fingerprint = fingerprint;
+            watch.changeSince = Date.now();
+          }
+
+          if (snap.loading || Date.now() - watch.changeSince < 10000) {
+            setAgentStatus(agentId, 'waiting');
+          } else if (status === 'waiting') {
             setAgentStatus(agentId, 'idle');
           }
         }
       })();
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [lastAgentText, setAgentStatus]);
+  }, [setAgentStatus]);
 
   const handleKillTerminal = useCallback(async () => {
     for (const [agentId, pending] of pendingPowershellDecisionRef.current) {
@@ -1154,6 +1164,50 @@ export default function App() {
   }, [debugDialogBusy, syncAgentWebviewVisibility]);
 
   // 首次切到该 Agent 时按需创建 WebView
+  const cancelComposerInitWait = useCallback((agentId: string) => {
+    composerInitPendingRef.current.delete(agentId);
+    composerInitGenRef.current.set(
+      agentId,
+      (composerInitGenRef.current.get(agentId) ?? 0) + 1
+    );
+  }, []);
+
+  const startComposerInitWait = useCallback(
+    (agentId: string) => {
+      composerInitPendingRef.current.add(agentId);
+      const gen = (composerInitGenRef.current.get(agentId) ?? 0) + 1;
+      composerInitGenRef.current.set(agentId, gen);
+      void (async () => {
+        while (
+          composerInitGenRef.current.get(agentId) === gen &&
+          composerInitPendingRef.current.has(agentId)
+        ) {
+          let ready = false;
+          try {
+            ready = await agentBridge.isComposerReady(agentId);
+          } catch {
+            ready = false;
+          }
+          if (
+            composerInitGenRef.current.get(agentId) !== gen ||
+            !composerInitPendingRef.current.has(agentId)
+          ) {
+            return;
+          }
+          if (ready) {
+            composerInitPendingRef.current.delete(agentId);
+            if (agentStatusesRef.current[agentId] === 'waiting') {
+              setAgentStatus(agentId, 'idle');
+            }
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      })();
+    },
+    [setAgentStatus]
+  );
+
   const ensureAgentWebview = useCallback(
     async (agentId: string) => {
       if (!workspaceRoot) return;
@@ -1181,6 +1235,7 @@ export default function App() {
         } catch {
           webviewsCreatedRef.current.delete(agentId);
           onloadAgentModeDoneRef.current.delete(agentId);
+          cancelComposerInitWait(agentId);
         }
       }
 
@@ -1196,17 +1251,28 @@ export default function App() {
         const bridgeScript = await fileService.readBridgeScript(
           agent.injectScript.replace(/^scripts\//, 'scripts/')
         );
+        setAgentStatus(agentId, 'waiting');
+        startComposerInitWait(agentId);
         await agentBridge.createWebview(agent, bounds, bridgeScript, defaultScript);
         webviewsCreatedRef.current.add(agentId);
         scheduleNewChatOnloadRef.current(agentId);
       } catch (err) {
+        cancelComposerInitWait(agentId);
+        setAgentStatus(agentId, 'error');
         console.warn(`Agent script load failed: ${agentId}`, err);
         return;
       }
 
       await syncAgentWebviewVisibility();
     },
-    [workspaceRoot, agents, syncAgentWebviewVisibility]
+    [
+      workspaceRoot,
+      agents,
+      syncAgentWebviewVisibility,
+      setAgentStatus,
+      startComposerInitWait,
+      cancelComposerInitWait,
+    ]
   );
 
   const handleSelectAgent = useCallback(
@@ -1235,10 +1301,12 @@ export default function App() {
   }, [initConfig]);
 
   useEffect(() => {
+    // 未判定或 Host 模式：不挂工具回调，避免与扩展侧重复执行
+    if (!agentHostReady || agentHostModeRef.current) return;
     agentBridge.onResponse(handleAgentResponse);
     agentBridge.onChatMessage(handleChatMessage);
     agentBridge.onBridgeComm(handleBridgeComm);
-  }, [handleAgentResponse, handleChatMessage, handleBridgeComm]);
+  }, [agentHostReady, handleAgentResponse, handleChatMessage, handleBridgeComm]);
 
   useEffect(() => {
     return () => {

@@ -24,35 +24,51 @@ html, body {
   flex-direction: column;
   height: 100vh;
 }
-.toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+.agent-tabs-bar {
+  flex-shrink: 0;
   border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.18);
 }
 .tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 2px;
+  padding: 4px 4px 0;
 }
 .tab {
-  border: 1px solid var(--border);
+  border: none;
+  border-radius: 4px 4px 0 0;
   background: transparent;
-  color: var(--fg);
-  padding: 2px 8px;
+  color: var(--muted);
+  padding: 6px 12px;
   cursor: pointer;
-  border-radius: 2px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-size: 12px;
+  position: relative;
+  margin-bottom: -1px;
+}
+.tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg);
 }
 .tab.active {
-  background: var(--btn);
-  color: var(--btn-fg);
-  border-color: transparent;
+  background: var(--bg);
+  color: var(--fg);
 }
-.tab.error { border-color: #c44; }
+.tab.active::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  background: var(--btn);
+  border-radius: 1px 1px 0 0;
+}
+.tab.error { color: #e66; }
+.tab.error.active::after { background: #c44; }
 .tab-spinner {
   width: 10px;
   height: 10px;
@@ -73,10 +89,12 @@ html, body {
 @keyframes tab-spin {
   to { transform: rotate(360deg); }
 }
-.toolbar-actions {
+.panel-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 button {
   border: 1px solid var(--border);
@@ -90,6 +108,10 @@ button.primary, button.primary:hover {
   background: var(--btn);
   color: var(--btn-fg);
   border-color: transparent;
+}
+button.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .host-status {
   padding: 4px 8px;
@@ -168,6 +190,55 @@ button.primary, button.primary:hover {
 }
 .md-body a {
   color: var(--vscode-textLink-foreground, #3794ff);
+}
+.md-body .md-part + .md-part,
+.md-body .md-part + .call-tool-fold,
+.md-body .call-tool-fold + .md-part,
+.md-body .call-tool-fold + .call-tool-fold {
+  margin-top: 0.4em;
+}
+.call-tool-fold {
+  margin: 0.35em 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.12));
+}
+.call-tool-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 8px;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 0.92em;
+  user-select: none;
+}
+.call-tool-summary::-webkit-details-marker {
+  display: none;
+}
+.call-tool-summary::before {
+  content: '▸ ';
+  color: var(--muted);
+}
+.call-tool-fold[open] > .call-tool-summary::before {
+  content: '▾ ';
+}
+.call-tool-fold[data-status='成功'] > .call-tool-summary {
+  border-left: 3px solid #3a8;
+}
+.call-tool-fold[data-status='失败'] > .call-tool-summary {
+  border-left: 3px solid #c55;
+}
+.call-tool-fold[data-status='进行中'] > .call-tool-summary {
+  border-left: 3px solid #c90;
+}
+.call-tool-raw {
+  margin: 0;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  overflow: auto;
+  white-space: pre;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 0.9em;
+  background: transparent;
 }
 .md-body table {
   border-collapse: collapse;

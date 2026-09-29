@@ -15,7 +15,7 @@ export interface AgentSelectors {
   responseContainer?: string;
   /** JS 源码：() => HTMLElement | null | boolean */
   loadingIndicator?: string;
-  /** JS 源码：() => { key: number, text: string } | string | null */
+  /** JS 源码：() => { key: string, text: string } | string | null */
   getLatestResponse?: string;
 }
 

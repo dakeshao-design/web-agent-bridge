@@ -1,11 +1,12 @@
 import type { AgentConfig, AgentStatus, IAgentBridge } from '@my-agent-editor/shared';
+import { normalizeChatKey } from '@my-agent-editor/shared';
 import type { AgentHostProcess } from './AgentHostProcess';
 
-type ResponseHandler = (agentId: string, text: string, key?: number) => void | Promise<void>;
+type ResponseHandler = (agentId: string, text: string, key?: string) => void | Promise<void>;
 type ChatHandler = (
   agentId: string,
   role: 'user' | 'agent',
-  key: number,
+  key: string,
   text: string
 ) => void | Promise<void>;
 type BridgeCommHandler = (
@@ -15,6 +16,7 @@ type BridgeCommHandler = (
 ) => void | Promise<void>;
 
 type NewChatOnloadHandler = (agentId: string) => void | Promise<void>;
+type AgentClosedHandler = (agentId: string) => void | Promise<void>;
 
 export class AgentHostBridge implements IAgentBridge {
   private statuses = new Map<string, AgentStatus>();
@@ -22,6 +24,7 @@ export class AgentHostBridge implements IAgentBridge {
   private chatHandler?: ChatHandler;
   private bridgeCommHandler?: BridgeCommHandler;
   private newChatOnloadHandler?: NewChatOnloadHandler;
+  private agentClosedHandler?: AgentClosedHandler;
   private eventCursor = 0;
   private polling = false;
   private stopPoll = false;
@@ -64,11 +67,11 @@ export class AgentHostBridge implements IAgentBridge {
     if (type === 'chat') {
       const agentId = String(ev.agentId || 'unknown');
       const role = (ev.role === 'user' ? 'user' : 'agent') as 'user' | 'agent';
-      const key = Number(ev.key ?? -1);
+      const key = normalizeChatKey(ev.key);
       const text = String(ev.text || '');
-      if (role === 'agent') this.statuses.set(agentId, 'idle');
       if (this.chatHandler) await this.chatHandler(agentId, role, key, text);
-      if (role === 'agent' && text && this.responseHandler) {
+      // 仅空 key 的 Host 工具响应路径触发工具；普通会话 key 只更新对话
+      if (role === 'agent' && text && key === '' && this.responseHandler) {
         await this.responseHandler(agentId, text, key);
       }
       return;
@@ -94,7 +97,10 @@ export class AgentHostBridge implements IAgentBridge {
     }
     if (type === 'agentClosed') {
       const agentId = String(ev.agentId || '');
-      if (agentId) this.created.delete(agentId);
+      if (agentId) {
+        this.created.delete(agentId);
+        if (this.agentClosedHandler) await this.agentClosedHandler(agentId);
+      }
     }
   }
 
@@ -170,6 +176,47 @@ export class AgentHostBridge implements IAgentBridge {
     }
   }
 
+  async getPollSnapshot(agentId: string): Promise<{
+    loading: boolean;
+    lastUser: { index: string; text: string } | null;
+    lastAgent: { index: string; text: string } | null;
+  }> {
+    try {
+      const res = (await this.host.request(
+        'GET',
+        `/agents/poll-snapshot?agentId=${encodeURIComponent(agentId)}`
+      )) as {
+        loading?: boolean;
+        lastUser?: { index?: string | number; text?: string } | null;
+        lastAgent?: { index?: string | number; text?: string } | null;
+      };
+      const toTurn = (v: { index?: string | number; text?: string } | null | undefined) => {
+        if (!v || typeof v.text !== 'string') return null;
+        const index = v.index == null || v.index === '' ? '' : String(v.index);
+        return { index, text: v.text };
+      };
+      return {
+        loading: !!res.loading,
+        lastUser: toTurn(res.lastUser),
+        lastAgent: toTurn(res.lastAgent),
+      };
+    } catch {
+      return { loading: false, lastUser: null, lastAgent: null };
+    }
+  }
+
+  async isComposerReady(agentId: string): Promise<boolean> {
+    try {
+      const res = (await this.host.request(
+        'GET',
+        `/agents/composer-ready?agentId=${encodeURIComponent(agentId)}`
+      )) as { ready?: boolean };
+      return !!res.ready;
+    } catch {
+      return false;
+    }
+  }
+
   onResponse(callback: ResponseHandler): void {
     this.responseHandler = callback;
   }
@@ -184,6 +231,10 @@ export class AgentHostBridge implements IAgentBridge {
 
   onNewChatOnloadAgentMode(callback: NewChatOnloadHandler): void {
     this.newChatOnloadHandler = callback;
+  }
+
+  onAgentClosed(callback: AgentClosedHandler): void {
+    this.agentClosedHandler = callback;
   }
 
   getStatus(agentId: string): AgentStatus {

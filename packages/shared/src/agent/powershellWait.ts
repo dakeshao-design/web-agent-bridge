@@ -1,3 +1,5 @@
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
+
 /** PowerShell 长时间执行的进度间隔 */
 export const POWERSHELL_PROGRESS_INTERVAL_MS = 100_000;
 
@@ -11,6 +13,7 @@ export function buildPowershellProgressMessage(params: {
   const { command, elapsedSec, newOutput } = params;
   const body = newOutput.trim() ? newOutput : '(本间隔无新增输出)';
   return [
+    SYSTEM_MARKER,
     '工具 `run_powershell` 仍在执行。',
     '',
     `command: ${command}`,

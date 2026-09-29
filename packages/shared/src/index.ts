@@ -1,6 +1,7 @@
 export { WORKSPACE_DATA_DIR, SKILLS_DIR } from './constants.js';
 export type { IFileService } from './interfaces/IFileService.js';
-export type { IAgentBridge, AgentStatus } from './interfaces/IAgentBridge.js';
+export type { IAgentBridge, AgentStatus, BridgePollTurn, BridgePollSnapshot } from './interfaces/IAgentBridge.js';
+export { pollSnapshotFingerprint, normalizeChatKey } from './interfaces/IAgentBridge.js';
 export type { IContextProvider, FileContext } from './interfaces/IContextProvider.js';
 export type {
   IFileOperationParser,
@@ -26,6 +27,7 @@ export { CallToolParser, stripMarkdownLineNumbers } from './parser/CallToolParse
 export {
   buildAgentModePrompt,
   AGENT_MODE_TOOL_FORMAT,
+  USER_MARKER,
   formatToolArgs,
   buildToolTable,
 } from './agent/agentModePrompt.js';
@@ -87,10 +89,20 @@ export {
   type ToolApplyResult,
 } from './agent/toolResultMessage.js';
 export {
+  formatCallToolDisplayLine,
+  extractCallToolDisplayMeta,
+  splitCallToolDisplayParts,
+  callToolDisplayStatusKey,
+  keyArgsFromToolArgs,
+  stripTrailingCallToolChrome,
+  type CallToolDisplayStatus,
+  type CallToolDisplayPart,
+} from './agent/callToolDisplay.js';
+export {
   fileOperationsFingerprint,
   isToolCallAlreadyReported,
   isToolResultEcho,
-  REPORT_TOOL_MARKER,
+  SYSTEM_MARKER,
 } from './agent/fileOperationsFingerprint.js';
 export {
   POWERSHELL_PROGRESS_INTERVAL_MS,
@@ -123,6 +135,7 @@ export {
   movePathTool,
   copyPathTool,
   lsTool,
+  filterListedNames,
   grepTool,
   runGrep,
   runPowershellTool,

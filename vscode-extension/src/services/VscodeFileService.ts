@@ -40,9 +40,11 @@ export class VscodeFileService implements IFileService {
     }
     if (isAbsolutePath(trimmed)) return trimmed.replace(/\/$/, '');
     const root = this.getWorkspaceRoot();
-    if (!root) return trimmed;
+    if (!root) {
+      throw new Error('工作区未打开：相对路径无法解析，请先打开文件夹');
+    }
     const sep = root.endsWith('/') ? '' : '/';
-    return `${root}${sep}${trimmed}`;
+    return `${root}${sep}${trimmed.replace(/^\.\//, '')}`;
   }
 
   async read(filePath: string): Promise<string> {

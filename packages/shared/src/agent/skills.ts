@@ -1,5 +1,5 @@
 /** Skill 注入方式 */
-export type SkillInjectMode = 'auto' | 'always' | 'none';
+export type SkillInjectMode = 'auto' | 'always' | 'manual';
 
 export type SkillSource = 'workspace' | 'user';
 
@@ -28,7 +28,7 @@ export interface DiscoverSkillsIO {
 
 function parseInject(raw: string | undefined): SkillInjectMode {
   const v = (raw ?? 'auto').trim().toLowerCase();
-  if (v === 'always' || v === 'none' || v === 'auto') return v;
+  if (v === 'always' || v === 'manual' || v === 'auto') return v;
   return 'auto';
 }
 

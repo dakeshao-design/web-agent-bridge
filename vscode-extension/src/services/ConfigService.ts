@@ -39,6 +39,7 @@ export class ConfigService {
     const source = await this.resolveTemplateSource();
     await fs.mkdir(path.join(this.userRoot, 'config'), { recursive: true });
     await fs.mkdir(path.join(this.userRoot, 'scripts'), { recursive: true });
+    await fs.mkdir(path.join(this.userRoot, 'skills'), { recursive: true });
 
     const appPath = this.getAppConfigPath();
     try {
@@ -48,19 +49,32 @@ export class ConfigService {
     }
 
     const scriptsSource = path.join(source, 'scripts');
-    let names: string[] = [];
     try {
-      names = await fs.readdir(scriptsSource);
+      const names = await fs.readdir(scriptsSource);
+      for (const name of names) {
+        // 种子桥接脚本与说明文档
+        if (!name.endsWith('.js') && !name.endsWith('.md')) continue;
+        const dest = path.join(this.userRoot, 'scripts', name);
+        try {
+          await fs.access(dest);
+        } catch {
+          await fs.copyFile(path.join(scriptsSource, name), dest);
+        }
+      }
     } catch {
-      return;
+      // 无 scripts 模板时跳过
     }
-    for (const name of names) {
-      if (!name.endsWith('.js')) continue;
-      const dest = path.join(this.userRoot, 'scripts', name);
+
+    // 种子 skills 说明
+    const skillSrc = path.join(source, 'skills', 'skill-readme.md');
+    const skillDest = path.join(this.userRoot, 'skills', 'skill-readme.md');
+    try {
+      await fs.access(skillDest);
+    } catch {
       try {
-        await fs.access(dest);
+        await fs.copyFile(skillSrc, skillDest);
       } catch {
-        await fs.copyFile(path.join(scriptsSource, name), dest);
+        // 无模板时跳过
       }
     }
   }
@@ -85,7 +99,7 @@ export class ConfigService {
 
   async resetConfigWithConfirm(): Promise<void> {
     const pick = await vscode.window.showWarningMessage(
-      '将用默认模板覆盖用户 config/scripts，是否继续？',
+      '将用默认模板覆盖用户 config/scripts/skills，是否继续？',
       { modal: true },
       '覆盖'
     );
@@ -99,6 +113,13 @@ export class ConfigService {
     await fs.cp(path.join(source, 'scripts'), path.join(this.userRoot, 'scripts'), {
       recursive: true,
     });
+    try {
+      await fs.cp(path.join(source, 'skills'), path.join(this.userRoot, 'skills'), {
+        recursive: true,
+      });
+    } catch {
+      // 无 skills 模板时跳过
+    }
     vscode.window.showInformationMessage('配置已重置');
   }
 

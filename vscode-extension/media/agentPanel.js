@@ -71,6 +71,32 @@
     }
   }
 
+  /** 渲染含可折叠 call-tool 的片段 */
+  function renderDisplayParts(container, parts) {
+    parts.forEach(function (part) {
+      if (!part || part.kind === 'text') {
+        const wrap = document.createElement('div');
+        wrap.className = 'md-part';
+        wrap.innerHTML = renderMarkdown(part && part.text ? part.text : '');
+        container.appendChild(wrap);
+        return;
+      }
+      if (part.kind !== 'tool') return;
+      const details = document.createElement('details');
+      details.className = 'call-tool-fold';
+      if (part.status) details.dataset.status = part.status;
+      const summary = document.createElement('summary');
+      summary.className = 'call-tool-summary';
+      summary.textContent = part.summary || 'call-tool';
+      const pre = document.createElement('pre');
+      pre.className = 'call-tool-raw';
+      pre.textContent = part.raw || '';
+      details.appendChild(summary);
+      details.appendChild(pre);
+      container.appendChild(details);
+    });
+  }
+
   function setDebugMenuOpen(open) {
     if (!debugMenu) return;
     if (open) debugMenu.classList.remove('hidden');
@@ -147,6 +173,8 @@
   }
 
   document.getElementById('sendBtn').addEventListener('click', function () {
+    const sendBtn = document.getElementById('sendBtn');
+    if (sendBtn.disabled) return;
     const text = inputEl.value;
     if (!text.trim()) return;
     post('send', { text: text });
@@ -156,7 +184,9 @@
   inputEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      document.getElementById('sendBtn').click();
+      const sendBtn = document.getElementById('sendBtn');
+      if (sendBtn.disabled) return;
+      sendBtn.click();
     }
   });
 
@@ -243,7 +273,11 @@
     (snapshot.agents || []).forEach(function (agent) {
       const btn = document.createElement('button');
       const st = (snapshot.statuses && snapshot.statuses[agent.id]) || 'idle';
-      btn.className = 'tab' + (agent.id === snapshot.activeAgentId ? ' active' : '');
+      const isActive = agent.id === snapshot.activeAgentId;
+      btn.type = 'button';
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      btn.className = 'tab' + (isActive ? ' active' : '');
       if (st === 'error') btn.className += ' error';
       const name = document.createElement('span');
       name.textContent = agent.name;
@@ -261,6 +295,17 @@
       tabsEl.appendChild(btn);
     });
 
+    // 当前 Agent：执行中禁用；已连 Host 但尚未就绪（无 status）也禁用
+    const sendBtn = document.getElementById('sendBtn');
+    const activeId = snapshot.activeAgentId;
+    const activeSt =
+      activeId && snapshot.statuses && snapshot.statuses[activeId] !== undefined
+        ? snapshot.statuses[activeId]
+        : undefined;
+    const busy = activeSt === 'sending' || activeSt === 'waiting';
+    const pendingInit = !activeSt && !!snapshot.hostReady;
+    sendBtn.disabled = !activeId || busy || pendingInit;
+
     renderPermissions(snapshot);
 
     chatEl.innerHTML = '';
@@ -277,6 +322,8 @@
       body.className = 'md-body';
       if (c.role === 'system') {
         body.textContent = c.text;
+      } else if (c.role === 'agent' && Array.isArray(c.displayParts) && c.displayParts.length > 0) {
+        renderDisplayParts(body, c.displayParts);
       } else {
         body.innerHTML = renderMarkdown(c.text);
       }

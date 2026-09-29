@@ -9,7 +9,8 @@
     "tauri": "pnpm --filter WABEditor tauri",
     "agent-host": "pnpm --filter agent-host start",
     "ext:compile": "pnpm --filter webagent-bridge compile",
-    "ext:watch": "pnpm --filter webagent-bridge watch"
+    "ext:watch": "pnpm --filter webagent-bridge watch",
+    "ext:package": "pnpm --filter WABEditor exec tauri build && pnpm --filter @my-agent-editor/shared build && pnpm --filter webagent-bridge package"
   },
   "engines": {
     "node": ">=18"

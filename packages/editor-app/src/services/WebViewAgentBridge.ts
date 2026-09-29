@@ -1,14 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { AgentConfig, AgentStatus, IAgentBridge } from '@my-agent-editor/shared';
+import { normalizeChatKey } from '@my-agent-editor/shared';
 
 type ChatRole = 'user' | 'agent';
 
-type ResponseHandler = (agentId: string, text: string, key?: number) => void | Promise<void>;
+type ResponseHandler = (agentId: string, text: string, key?: string) => void | Promise<void>;
 type ChatMessageHandler = (
   agentId: string,
   role: ChatRole,
-  key: number,
+  key: string,
   text: string
 ) => void | Promise<void>;
 
@@ -43,17 +44,13 @@ export class WebViewAgentBridge implements IAgentBridge {
     this.unlistenChat = await listen<{
       agentId?: string;
       role?: ChatRole;
-      key?: number;
+      key?: string | number;
       text: string;
     }>('agent-chat-message', (event) => {
       const agentId = event.payload.agentId || 'unknown';
       const role = event.payload.role || 'agent';
-      const key = event.payload.key ?? -1;
+      const key = normalizeChatKey(event.payload.key);
       const text = event.payload.text || '';
-
-      if (role === 'agent') {
-        this.statuses.set(agentId, 'idle');
-      }
 
       void (async () => {
         const chatHandler = this.chatMessageCallbackRef.current;
@@ -65,7 +62,8 @@ export class WebViewAgentBridge implements IAgentBridge {
           }
         }
 
-        if (role === 'agent') {
+        // 仅空 key 的 Host 工具响应路径触发工具；普通会话 key 只更新对话
+        if (role === 'agent' && key === '') {
           const responseHandler = this.responseCallbackRef.current;
           if (responseHandler) {
             try {
@@ -152,7 +150,7 @@ export class WebViewAgentBridge implements IAgentBridge {
       templateScript,
       bridgeConfig,
     });
-    this.statuses.set(agent.id, 'idle');
+    this.statuses.set(agent.id, 'waiting');
   }
 
   async showWebview(agentId: string, bounds: { x: number; y: number; width: number; height: number }): Promise<void> {
@@ -222,6 +220,32 @@ export class WebViewAgentBridge implements IAgentBridge {
       return await invoke<boolean>('agent_bridge_is_loading', { agentId });
     } catch {
       return false;
+    }
+  }
+
+  async getPollSnapshot(agentId: string): Promise<{
+    loading: boolean;
+    lastUser: { index: string; text: string } | null;
+    lastAgent: { index: string; text: string } | null;
+  }> {
+    try {
+      const res = await invoke<{
+        loading?: boolean;
+        lastUser?: { index?: string | number; text?: string } | null;
+        lastAgent?: { index?: string | number; text?: string } | null;
+      }>('agent_bridge_poll_snapshot', { agentId });
+      const toTurn = (v: { index?: string | number; text?: string } | null | undefined) => {
+        if (!v || typeof v.text !== 'string') return null;
+        const index = v.index == null || v.index === '' ? '' : String(v.index);
+        return { index, text: v.text };
+      };
+      return {
+        loading: !!res.loading,
+        lastUser: toTurn(res.lastUser),
+        lastAgent: toTurn(res.lastAgent),
+      };
+    } catch {
+      return { loading: false, lastUser: null, lastAgent: null };
     }
   }
 

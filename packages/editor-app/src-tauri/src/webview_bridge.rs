@@ -9,10 +9,16 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::json;
 use tauri::webview::{NewWindowFeatures, NewWindowResponse, WebviewWindowBuilder};
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, State, WebviewUrl,
+    WindowEvent,
+};
 
 /// Host 轮询 pollSnapshot / pollSnapshotForHost
 const POLL_SNAPSHOT_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge)return JSON.stringify({error:"no bridge"});var fn=window.__agentEditorBridge.pollSnapshotForHost||window.__agentEditorBridge.pollSnapshot;if(typeof fn!=="function")return JSON.stringify({error:"no pollSnapshot"});return JSON.stringify(fn.call(window.__agentEditorBridge));}catch(e){return JSON.stringify({error:String(e)});}})()"#;
+
+/// 工具定稿文本：含 pin/copy 的 getLatestResponseMeta
+const LATEST_RESPONSE_META_EXPR: &str = r#"(function(){try{if(!window.__agentEditorBridge||typeof window.__agentEditorBridge.getLatestResponseMeta!=="function")return JSON.stringify({error:"no meta"});return JSON.stringify(window.__agentEditorBridge.getLatestResponseMeta());}catch(e){return JSON.stringify({error:String(e)});}})()"#;
 
 const BRIDGE_CHECK_EXPR: &str = "Boolean(window.__agentEditorBridge)";
 
@@ -44,13 +50,15 @@ pub struct WebviewState {
     pub webviews: Mutex<HashMap<String, bool>>,
     pub responses: Mutex<HashMap<String, String>>,
     pub peek_cache: Mutex<HashMap<String, String>>,
-    pub peek_key_cache: Mutex<HashMap<String, i64>>,
+    pub peek_key_cache: Mutex<HashMap<String, String>>,
     pub injection_scripts: Mutex<HashMap<String, String>>,
     sync_states: Mutex<HashMap<String, AgentSyncState>>,
     pub active_syncs: Mutex<HashSet<String>>,
     pub visible_labels: Mutex<HashSet<String>>,
-    /// Host 静默屏外窗：抢焦点时再钉回屏外
+    /// Host 静默窥视窗：抢焦点时再钉回窥视位
     pub silent_labels: Mutex<HashSet<String>>,
+    /// Host 已启动的 @newChatOnload 任务
+    onload_new_chat_started: Mutex<HashSet<String>>,
     eval_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
@@ -66,6 +74,7 @@ impl Default for WebviewState {
             active_syncs: Mutex::new(HashSet::new()),
             visible_labels: Mutex::new(HashSet::new()),
             silent_labels: Mutex::new(HashSet::new()),
+            onload_new_chat_started: Mutex::new(HashSet::new()),
             eval_locks: Mutex::new(HashMap::new()),
         }
     }
@@ -102,18 +111,52 @@ fn agent_webview_alive(app: &AppHandle, label: &str) -> bool {
     }
 }
 
-/// Host 静默：屏外 show，避免 win.hide 触发 WebView2 节流导致无回复
+/// 工作区右下角露出数 px，避免完全离屏被当成 hidden 节流
+fn silent_peek_position(win: &tauri::WebviewWindow) -> PhysicalPosition<i32> {
+    const PEEK_PX: i32 = 4;
+    let monitor = win
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| win.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let wa = m.work_area();
+        PhysicalPosition::new(
+            wa.position.x + wa.size.width as i32 - PEEK_PX,
+            wa.position.y + wa.size.height as i32 - PEEK_PX,
+        )
+    } else {
+        PhysicalPosition::new(0, 0)
+    }
+}
+
+/// Host 静默：屏内窥视 show。hide 或完全离屏会导致 WebView2 节流
 fn place_host_window_silent(win: &tauri::WebviewWindow) -> Result<(), String> {
     let _ = win.set_skip_taskbar(true);
-    // 保持合理尺寸，避免部分站点在极小窗下停更
+    let _ = win.set_always_on_bottom(true);
+    let _ = win.set_ignore_cursor_events(true);
+    // 保持合理尺寸，避免站点在极小 viewport 下停更
     win.set_size(LogicalSize::new(960.0, 720.0))
         .map_err(|e| e.to_string())?;
-    win.set_position(LogicalPosition::new(-32000.0, -32000.0))
-        .map_err(|e| e.to_string())?;
+    let pos = silent_peek_position(win);
+    win.set_position(pos).map_err(|e| e.to_string())?;
     win.show().map_err(|e| e.to_string())?;
-    // show 后系统可能把窗拉回屏幕，再钉一次且不抢焦点
-    let _ = win.set_position(LogicalPosition::new(-32000.0, -32000.0));
+    // show 后位置可能被拉回，再钉一次且不抢焦点
+    let _ = win.set_position(silent_peek_position(win));
     Ok(())
+}
+
+/// 最小化 / 无关闭钮时：退回 Host 静默窥视，不销毁 WebView
+fn hide_host_window_to_background(app: &AppHandle, label: &str) {
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.unminimize();
+        let _ = place_host_window_silent(&win);
+        mark_host_window_silent(app, label, true);
+    }
+    let state = app.state::<WebviewState>();
+    if let Ok(mut visible) = state.visible_labels.lock() {
+        visible.remove(label);
+    };
 }
 
 fn mark_host_window_silent(app: &AppHandle, label: &str, silent: bool) {
@@ -147,6 +190,9 @@ fn mark_agent_webview_gone(app: &AppHandle, label: &str) {
     if let Ok(mut silent) = state.silent_labels.lock() {
         silent.remove(label);
     }
+    if let Ok(mut onload) = state.onload_new_chat_started.lock() {
+        onload.remove(label);
+    }
     let agent_id = label
         .strip_prefix("agent-")
         .unwrap_or(label)
@@ -165,8 +211,16 @@ fn attach_host_window_close_cleanup(app: &AppHandle, window: &tauri::WebviewWind
             WindowEvent::Destroyed => {
                 mark_agent_webview_gone(&app_for_event, &label_for_event);
             }
+            WindowEvent::Resized(_) => {
+                // 最小化改为后台静默，避免任务栏最小化
+                if let Some(win) = app_for_event.get_webview_window(&label_for_event) {
+                    if win.is_minimized().unwrap_or(false) {
+                        hide_host_window_to_background(&app_for_event, &label_for_event);
+                    }
+                }
+            }
             WindowEvent::Focused(true) => {
-                // 静默窗被站点抢焦点时钉回屏外
+                // 静默中被站点抢焦点时钉回窥视位
                 if is_host_window_silent(&app_for_event, &label_for_event) {
                     if let Some(win) = app_for_event.get_webview_window(&label_for_event) {
                         let _ = place_host_window_silent(&win);
@@ -178,13 +232,29 @@ fn attach_host_window_close_cleanup(app: &AppHandle, window: &tauri::WebviewWind
     });
 }
 
+/// 登录弹窗：无关闭钮；最小化则 hide 到后台
+fn attach_login_popup_window_behavior(app: &AppHandle, window: &tauri::WebviewWindow, label: &str) {
+    let app_for_event = app.clone();
+    let label_for_event = label.to_string();
+    window.on_window_event(move |event| {
+        if let WindowEvent::Resized(_) = event {
+            if let Some(win) = app_for_event.get_webview_window(&label_for_event) {
+                if win.is_minimized().unwrap_or(false) {
+                    let _ = win.unminimize();
+                    let _ = win.hide();
+                }
+            }
+        }
+    });
+}
+
 struct AgentSyncState {
-    emitted_keys: HashSet<i64>,
-    emitted_texts: HashMap<i64, String>,
-    stable_tracker: HashMap<i64, (String, Instant)>,
+    emitted_keys: HashSet<String>,
+    emitted_texts: HashMap<String, String>,
+    stable_tracker: HashMap<String, (String, Instant)>,
     seeded: bool,
     bridge_baseline: String,
-    baseline_user_index: Option<i64>,
+    baseline_user_index: Option<String>,
     last_emitted_bridge_text: String,
     bridge_stable_tracker: Option<(String, Instant)>,
     last_logged_tool_capture: String,
@@ -205,7 +275,7 @@ impl AgentSyncState {
         }
     }
 
-    fn on_send(&mut self, baseline: String, baseline_user_index: Option<i64>) {
+    fn on_send(&mut self, baseline: String, baseline_user_index: Option<String>) {
         self.bridge_baseline = baseline;
         self.baseline_user_index = baseline_user_index;
         self.bridge_stable_tracker = None;
@@ -237,19 +307,13 @@ fn should_skip_sync_message(sync_state: &AgentSyncState, message: &ChatMessage) 
     let Some(prev) = sync_state.emitted_texts.get(&message.key) else {
         return true;
     };
-    if prev == &message.text {
-        return true;
-    }
-    // 同 index 下 tool 文案变化时再同步
-    if message.text.contains("BEGIN_TOOL") && message.text != *prev {
-        return false;
-    }
-    message.text.len() <= prev.len().saturating_add(40)
+    // 同 key 文本有变化则再同步
+    prev == &message.text
 }
 
 #[derive(Debug, Clone)]
 struct ChatMessage {
-    key: i64,
+    key: String,
     role: String,
     text: String,
 }
@@ -308,6 +372,7 @@ fn ensure_user_config(app: &AppHandle) -> PathBuf {
     let root = user_config_root();
     let _ = fs::create_dir_all(root.join("config"));
     let _ = fs::create_dir_all(root.join("scripts"));
+    let _ = fs::create_dir_all(root.join("skills"));
 
     for seed in seed_roots(app) {
         copy_if_missing(
@@ -321,12 +386,18 @@ fn ensure_user_config(app: &AppHandle) -> PathBuf {
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if !name.ends_with(".js") {
+                // 种子桥接脚本与说明文档
+                if !name.ends_with(".js") && !name.ends_with(".md") {
                     continue;
                 }
                 copy_if_missing(&path, &root.join("scripts").join(name));
             }
         }
+        // 种子 skills 说明
+        copy_if_missing(
+            &seed.join("skills").join("skill-readme.md"),
+            &root.join("skills").join("skill-readme.md"),
+        );
     }
     root
 }
@@ -515,7 +586,7 @@ fn emit_agent_chat_event(
     app: &AppHandle,
     agent_id: &str,
     role: &str,
-    key: i64,
+    key: &str,
     text: &str,
 ) -> Result<(), String> {
     let payload = serde_json::json!({
@@ -524,6 +595,12 @@ fn emit_agent_chat_event(
         "key": key,
         "text": text
     });
+    // Agent Host：必须 app.emit，否则 EventBus（扩展侧）收不到
+    if crate::is_agent_host_mode() {
+        return app
+            .emit("agent-chat-message", payload)
+            .map_err(|e| e.to_string());
+    }
     if let Some(window) = app.get_webview_window("main") {
         window
             .emit("agent-chat-message", payload)
@@ -551,6 +628,10 @@ fn emit_bridge_comm_log_inner(app: &AppHandle, agent_id: &str, direction: &str, 
         "direction": direction,
         "content": content,
     });
+    if crate::is_agent_host_mode() {
+        let _ = app.emit("bridge-comm-log", payload);
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit("bridge-comm-log", payload);
     } else {
@@ -595,8 +676,8 @@ fn flush_bridge_chat_messages(app: &AppHandle, label: &str, agent_id: &str) {
         if text.is_empty() {
             continue;
         }
-        let key = item.get("key").and_then(|v| v.as_i64()).unwrap_or(-1);
-        let _ = emit_agent_chat_event(app, agent_id, role, key, text);
+        let key = json_key_to_string(item.get("key"));
+        let _ = emit_agent_chat_event(app, agent_id, role, &key, text);
     }
 }
 
@@ -610,6 +691,10 @@ fn flush_bridge_pending_reset(app: &AppHandle, label: &str, agent_id: &str) {
 
 fn emit_new_chat_onload_agent_mode(app: &AppHandle, agent_id: &str) {
     let payload = serde_json::json!({ "agentId": agent_id });
+    if crate::is_agent_host_mode() {
+        let _ = app.emit("new-chat-onload-agent-mode", payload);
+        return;
+    }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit("new-chat-onload-agent-mode", payload);
     } else {
@@ -623,6 +708,55 @@ fn flush_bridge_new_chat_onload(app: &AppHandle, label: &str, agent_id: &str) {
     if raw.trim() == "true" {
         emit_new_chat_onload_agent_mode(app, agent_id);
     }
+}
+
+/// Host 侧驱动 @newChatOnload：用 eval 轮询，不依赖页内 setTimeout
+fn start_host_driven_new_chat_onload(app: AppHandle, label: String, agent_id: String) {
+    let state = app.state::<WebviewState>();
+    {
+        let Ok(mut started) = state.onload_new_chat_started.lock() else {
+            return;
+        };
+        if !started.insert(label.clone()) {
+            return;
+        }
+    }
+
+    tauri::async_runtime::spawn(async move {
+        let mut ready = false;
+        for _ in 0..240 {
+            if !agent_webview_alive(&app, &label) {
+                return;
+            }
+            ensure_bridge_injected(&app, &label, &agent_id).await;
+            if debug_eval_composer_ready(&app, &label) {
+                ready = true;
+                break;
+            }
+            async_delay(500).await;
+        }
+        if !ready {
+            eprintln!(
+                "[agent-host] newChatOnload composer timeout agentId={}",
+                agent_id
+            );
+            return;
+        }
+
+        match new_agent_chat_session(app.clone(), agent_id.clone()).await {
+            Ok(()) => {
+                async_delay(500).await;
+                emit_new_chat_onload_agent_mode(&app, &agent_id);
+            }
+            Err(err) => {
+                eprintln!(
+                    "[agent-host] newChatOnload newChatSession failed agentId={}: {}",
+                    agent_id, err
+                );
+                emit_new_chat_onload_agent_mode(&app, &agent_id);
+            }
+        }
+    });
 }
 
 fn flush_bridge_queues(app: &AppHandle, label: &str, agent_id: &str) {
@@ -660,17 +794,17 @@ fn emit_chat_message(app: &AppHandle, agent_id: &str, message: &ChatMessage) {
     if message.role == "agent" && message.text.contains("BEGIN_TOOL") {
         log_tool_capture_if_new(app, agent_id, "conversation", &message.text);
     }
-    let _ = emit_agent_chat_event(app, agent_id, &message.role, message.key, &message.text);
+    let _ = emit_agent_chat_event(app, agent_id, &message.role, &message.key, &message.text);
 }
 
 struct BridgeResponseMeta {
-    key: i64,
+    key: String,
     text: String,
     loading: bool,
 }
 
 struct PollTurn {
-    index: i64,
+    index: String,
     text: String,
 }
 
@@ -678,6 +812,29 @@ struct PollSnapshot {
     loading: bool,
     last_user: Option<PollTurn>,
     last_agent: Option<PollTurn>,
+}
+
+/// 将 JSON 的 index/key 规范为字符串标识
+fn json_key_to_string(value: Option<&serde_json::Value>) -> String {
+    let Some(v) = value else {
+        return String::new();
+    };
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    if let Some(n) = v.as_i64() {
+        return n.to_string();
+    }
+    if let Some(n) = v.as_u64() {
+        return n.to_string();
+    }
+    if let Some(n) = v.as_f64() {
+        if n.fract() == 0.0 {
+            return (n as i64).to_string();
+        }
+        return n.to_string();
+    }
+    String::new()
 }
 
 fn parse_poll_turn(value: Option<&serde_json::Value>) -> Option<PollTurn> {
@@ -691,11 +848,14 @@ fn parse_poll_turn(value: Option<&serde_json::Value>) -> Option<PollTurn> {
     if text.is_empty() {
         return None;
     }
-    let index = obj
-        .get("index")
-        .and_then(|v| v.as_i64())
-        .or_else(|| obj.get("key").and_then(|v| v.as_i64()))
-        .unwrap_or(-1);
+    let index = {
+        let raw = json_key_to_string(obj.get("index"));
+        if raw.is_empty() {
+            json_key_to_string(obj.get("key"))
+        } else {
+            raw
+        }
+    };
     Some(PollTurn { index, text })
 }
 
@@ -725,18 +885,11 @@ fn parse_poll_snapshot(raw: &str) -> PollSnapshot {
         .get("loading")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if loading {
-        return PollSnapshot {
-            loading: true,
-            last_user: None,
-            last_agent: None,
-        };
-    }
     let last_user = parse_poll_turn(value.get("lastUser")).or_else(|| parse_poll_turn(value.get("last_user")));
     let last_agent =
         parse_poll_turn(value.get("lastAgent")).or_else(|| parse_poll_turn(value.get("last_agent")));
     PollSnapshot {
-        loading: false,
+        loading,
         last_user,
         last_agent,
     }
@@ -745,19 +898,19 @@ fn parse_poll_snapshot(raw: &str) -> PollSnapshot {
 fn snapshot_to_response_meta(snap: &PollSnapshot) -> BridgeResponseMeta {
     if snap.loading {
         return BridgeResponseMeta {
-            key: -1,
+            key: String::new(),
             text: String::new(),
             loading: true,
         };
     }
     match &snap.last_agent {
         Some(agent) => BridgeResponseMeta {
-            key: agent.index,
+            key: agent.index.clone(),
             text: agent.text.clone(),
             loading: false,
         },
         None => BridgeResponseMeta {
-            key: -1,
+            key: String::new(),
             text: String::new(),
             loading: false,
         },
@@ -816,7 +969,7 @@ fn store_and_emit_agent_response(
     }
     let log_content = format!("text:\n{}", text);
     emit_bridge_comm_log_inner(app, agent_id, "response", &log_content);
-    emit_agent_chat_event(app, agent_id, "agent", -1, text)
+    emit_agent_chat_event(app, agent_id, "agent", "", text)
 }
 
 fn seed_sync_from_snapshot(sync_state: &mut AgentSyncState, snap: &PollSnapshot) {
@@ -824,16 +977,16 @@ fn seed_sync_from_snapshot(sync_state: &mut AgentSyncState, snap: &PollSnapshot)
         return;
     }
     if let Some(user) = &snap.last_user {
-        sync_state.emitted_keys.insert(user.index);
+        sync_state.emitted_keys.insert(user.index.clone());
         sync_state
             .emitted_texts
-            .insert(user.index, user.text.clone());
+            .insert(user.index.clone(), user.text.clone());
     }
     if let Some(agent) = &snap.last_agent {
-        sync_state.emitted_keys.insert(agent.index);
+        sync_state.emitted_keys.insert(agent.index.clone());
         sync_state
             .emitted_texts
-            .insert(agent.index, agent.text.clone());
+            .insert(agent.index.clone(), agent.text.clone());
         sync_state.bridge_baseline = agent.text.clone();
         sync_state.last_emitted_bridge_text = agent.text.clone();
     }
@@ -842,19 +995,16 @@ fn seed_sync_from_snapshot(sync_state: &mut AgentSyncState, snap: &PollSnapshot)
 
 fn messages_from_snapshot(snap: &PollSnapshot) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
-    if snap.loading {
-        return messages;
-    }
     if let Some(user) = &snap.last_user {
         messages.push(ChatMessage {
-            key: user.index,
+            key: user.index.clone(),
             role: "user".to_string(),
             text: user.text.clone(),
         });
     }
     if let Some(agent) = &snap.last_agent {
         messages.push(ChatMessage {
-            key: agent.index,
+            key: agent.index.clone(),
             role: "agent".to_string(),
             text: agent.text.clone(),
         });
@@ -885,12 +1035,28 @@ fn emit_snapshot_conversation(
             .or_insert_with(AgentSyncState::new);
 
         if !sync_state.seeded {
+            if snap.loading {
+                // loading 时只标 seeded，避免 seed_sync 直接 return 造成永久不 seed
+                sync_state.seeded = true;
+                return;
+            }
             seed_sync_from_snapshot(sync_state, snap);
             return;
         }
 
         for message in messages {
             if should_skip_sync_message(sync_state, &message) {
+                continue;
+            }
+
+            // 生成中：agent 文本变化即推送，便于侧栏实时刷新
+            if snap.loading && message.role == "agent" {
+                sync_state.emitted_keys.insert(message.key.clone());
+                sync_state
+                    .emitted_texts
+                    .insert(message.key.clone(), message.text.clone());
+                sync_state.stable_tracker.remove(&message.key);
+                ready_messages.push(message);
                 continue;
             }
 
@@ -904,10 +1070,10 @@ fn emit_snapshot_conversation(
             match sync_state.stable_tracker.get(&message.key) {
                 Some((last_text, since)) if last_text == &message.text => {
                     if now.duration_since(*since) >= Duration::from_millis(required_stable) {
-                        sync_state.emitted_keys.insert(message.key);
+                        sync_state.emitted_keys.insert(message.key.clone());
                         sync_state
                             .emitted_texts
-                            .insert(message.key, message.text.clone());
+                            .insert(message.key.clone(), message.text.clone());
                         sync_state.stable_tracker.remove(&message.key);
                         ready_messages.push(message);
                     }
@@ -924,14 +1090,15 @@ fn emit_snapshot_conversation(
                                     .map(|t| t.contains("BEGIN_TOOL"))
                                     .unwrap_or(false);
                                 if !already_emitted_tool {
-                                    sync_state.emitted_keys.insert(message.key);
+                                    let prev_text = prev_text.clone();
+                                    sync_state.emitted_keys.insert(message.key.clone());
                                     sync_state
                                         .emitted_texts
-                                        .insert(message.key, prev_text.clone());
+                                        .insert(message.key.clone(), prev_text.clone());
                                     ready_messages.push(ChatMessage {
-                                        key: message.key,
+                                        key: message.key.clone(),
                                         role: message.role.clone(),
-                                        text: prev_text.clone(),
+                                        text: prev_text,
                                     });
                                 }
                             }
@@ -939,7 +1106,7 @@ fn emit_snapshot_conversation(
                     }
                     sync_state
                         .stable_tracker
-                        .insert(message.key, (message.text.clone(), now));
+                        .insert(message.key.clone(), (message.text.clone(), now));
                 }
             }
         }
@@ -964,7 +1131,7 @@ fn reset_bridge_baseline_on_send(app: &AppHandle, label: &str, agent_id: &str) {
         .as_ref()
         .map(|a| a.text.clone())
         .unwrap_or_default();
-    let baseline_user_index = snap.last_user.as_ref().map(|u| u.index);
+    let baseline_user_index = snap.last_user.as_ref().map(|u| u.index.clone());
 
     let state = app.state::<WebviewState>();
     let mut sync_states = match state.sync_states.lock() {
@@ -975,16 +1142,22 @@ fn reset_bridge_baseline_on_send(app: &AppHandle, label: &str, agent_id: &str) {
         .entry(agent_id.to_string())
         .or_insert_with(AgentSyncState::new);
     sync_state.on_send(baseline, baseline_user_index);
-    // 以发送时刻为对话基线。空会话 / loading 时只标 seeded，
-    // 避免结束后首包同时含 user+agent 时被 seed 吞掉不入日志。
-    if snap.loading {
-        sync_state.seeded = true;
-    } else {
-        seed_sync_from_snapshot(sync_state, &snap);
-        if !sync_state.seeded {
-            sync_state.seeded = true;
-        }
+    // 发送复位只更新对话去重 key 与 agent 基线。
+    // 不可 seed last_emitted：Host 点击发送后常二次 reset，若此时 lastAgent 已含
+    // call-tool，seed 会把它标成已定稿，导致永不空 key emit（VS Code 常见，桌面较少踩中）。
+    if let Some(user) = &snap.last_user {
+        sync_state.emitted_keys.insert(user.index.clone());
+        sync_state
+            .emitted_texts
+            .insert(user.index.clone(), user.text.clone());
     }
+    if let Some(agent) = &snap.last_agent {
+        sync_state.emitted_keys.insert(agent.index.clone());
+        sync_state
+            .emitted_texts
+            .insert(agent.index.clone(), agent.text.clone());
+    }
+    sync_state.seeded = true;
 }
 
 fn process_bridge_response_sync(
@@ -1004,7 +1177,23 @@ fn process_bridge_response_sync(
         return;
     }
 
-    let meta = snapshot_to_response_meta(snap);
+    let mut meta = snapshot_to_response_meta(snap);
+    // pin/copy 的完整 call-tool 覆盖 DOM 残缺文本
+    if let Some(pinned) = eval_latest_response_meta(app, agent_id) {
+        if pinned.loading {
+            return;
+        }
+        if !pinned.text.is_empty()
+            && (meta.text.is_empty()
+                || !meta.text.contains("BEGIN_TOOL")
+                || (!meta.text.contains("END_TOOL") && pinned.text.contains("END_TOOL")))
+        {
+            meta.text = pinned.text;
+            if meta.key.is_empty() {
+                meta.key = pinned.key;
+            }
+        }
+    }
     if meta.text.is_empty() {
         return;
     }
@@ -1031,23 +1220,34 @@ fn process_bridge_response_sync(
             return;
         }
 
-        if let Some(baseline_user_index) = sync_state.baseline_user_index {
-            if let Some(user) = &snap.last_user {
-                if user.index <= baseline_user_index
-                    && !has_new_bridge_text(&sync_state.bridge_baseline, &meta.text)
-                {
+        // 已在等待同一候选定稿时，勿因 baseline 早退清掉 tracker
+        let tracking_current = sync_state
+            .bridge_stable_tracker
+            .as_ref()
+            .is_some_and(|(t, _)| t == &meta.text);
+
+        if !tracking_current {
+            let has_new = has_new_bridge_text(&sync_state.bridge_baseline, &meta.text);
+            // 基线曾被误推进时：仍有未 emit 的 call-tool 则放行
+            let unemitted_tool = meta.text.contains("BEGIN_TOOL")
+                && meta.text != sync_state.last_emitted_bridge_text;
+            if !has_new && !unemitted_tool {
+                if let Some(ref baseline_user_index) = sync_state.baseline_user_index {
+                    if let Some(user) = &snap.last_user {
+                        // 同 index 且相对发送基线无新 agent 文本：仍为发送前快照
+                        if &user.index == baseline_user_index {
+                            sync_state.bridge_stable_tracker = None;
+                            return;
+                        }
+                    }
+                } else {
                     sync_state.bridge_stable_tracker = None;
                     return;
                 }
             }
-        } else if !has_new_bridge_text(&sync_state.bridge_baseline, &meta.text) {
-            sync_state.bridge_stable_tracker = None;
-            return;
         }
 
-        if meta.key >= 0 {
-            sync_state.bridge_baseline = meta.text.clone();
-        }
+        // 基线仅在 emit 成功后推进，避免稳定等待期间被改写后误判“无新消息”
 
         match sync_state.bridge_stable_tracker.as_ref() {
             Some((last_text, since)) if last_text == &meta.text => {
@@ -1060,6 +1260,7 @@ fn process_bridge_response_sync(
                 };
                 if now.duration_since(*since) >= Duration::from_millis(required_stable) {
                     sync_state.last_emitted_bridge_text = meta.text.clone();
+                    sync_state.bridge_baseline = meta.text.clone();
                     sync_state.bridge_stable_tracker = None;
                     ready_text = Some(meta.text.clone());
                 }
@@ -1077,6 +1278,30 @@ fn process_bridge_response_sync(
             eprintln!("[bridge-sync] emit failed: {err}");
         }
     }
+}
+
+fn eval_latest_response_meta(app: &AppHandle, agent_id: &str) -> Option<BridgeResponseMeta> {
+    let label = format!("agent-{}", agent_id);
+    let raw = eval_webview_json(app, &label, LATEST_RESPONSE_META_EXPR).ok()?;
+    if raw.is_empty() || raw == "null" || raw == "undefined" {
+        return None;
+    }
+    let value = parse_json_value_deep(&raw)?;
+    if value.get("error").is_some() {
+        return None;
+    }
+    let loading = value
+        .get("loading")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let text = value
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let key = json_key_to_string(value.get("key"));
+    Some(BridgeResponseMeta { key, text, loading })
 }
 
 fn eval_webview_script(app: &AppHandle, label: &str, script: &str) -> Result<(), String> {
@@ -1162,7 +1387,9 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
         flush_bridge_queues(&app, &label, &agent_id);
 
         let state = app.state::<WebviewState>();
-        if !is_webview_visible(&state, &label) {
+        // 静默 Host：webview 不在 visible_labels，仍需同步工具
+        let must_sync = crate::is_agent_host_mode() || is_webview_visible(&state, &label);
+        if !must_sync {
             continue;
         }
 
@@ -1242,9 +1469,9 @@ fn configure_webview2_settings(
     }
 }
 
-/// debug 或 adminMode 时启用 DevTools
+/// debug、adminMode 或 Agent Host 时启用 DevTools
 pub fn should_enable_devtools() -> bool {
-    crate::is_admin_mode() || cfg!(debug_assertions)
+    crate::is_admin_mode() || cfg!(debug_assertions) || crate::is_agent_host_mode()
 }
 
 pub fn apply_webview_devtools(window: &tauri::WebviewWindow, enable: bool) {
@@ -1276,6 +1503,7 @@ fn open_agent_popup_window(
         .title("登录")
         .inner_size(960.0, 720.0)
         .center()
+        .closable(false)
         .devtools(should_enable_devtools())
         .initialization_script(
             r#"(function(){window.addEventListener('contextmenu',function(e){e.stopImmediatePropagation();},true);})();"#,
@@ -1298,6 +1526,7 @@ fn open_agent_popup_window(
                     configure_webview2_settings(&platform_webview, enable);
                 });
             }
+            attach_login_popup_window_behavior(app, &window, &popup_label);
             NewWindowResponse::Create { window }
         }
         Err(err) => {
@@ -1332,6 +1561,10 @@ pub async fn create_agent_webview(
 
     let data_dir = agent_data_dir(&app, &agent_id)?;
     let parsed_url: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
+    let want_onload = bridge_config
+        .get("newChatOnload")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let injection = build_injection_script(&template_script, &bridge_script);
     let poll_interval = 1000;
@@ -1400,6 +1633,7 @@ pub async fn create_agent_webview(
             .inner_size(width, height)
             .center()
             .visible(false)
+            .closable(false)
             .devtools(should_enable_devtools())
             .initialization_script(&init_for_create)
             .data_directory(data_dir)
@@ -1416,7 +1650,7 @@ pub async fn create_agent_webview(
                 });
             }
             attach_host_window_close_cleanup(&app_for_create, &window, &label_for_create);
-            // 屏外显示以保持页面活跃，勿 hide（否则闪一下且脚本被节流）
+            // 窥视式 show 以保持页面存活。hide / 完全离屏会导致节流
             place_host_window_silent(&window)?;
             mark_host_window_silent(&app_for_create, &label_for_create, true);
             Ok(())
@@ -1474,7 +1708,10 @@ pub async fn create_agent_webview(
     drop(webviews);
 
     if crate::is_agent_host_mode() {
-        start_conversation_sync(&app, label, agent_id);
+        start_conversation_sync(&app, label.clone(), agent_id.clone());
+        if want_onload {
+            start_host_driven_new_chat_onload(app, label, agent_id);
+        }
     }
 
     Ok(())
@@ -1513,6 +1750,8 @@ pub async fn show_agent_webview(
             let width = if bounds.width > 0.0 { bounds.width } else { 1000.0 };
             let height = if bounds.height > 0.0 { bounds.height } else { 750.0 };
             let _ = win.unminimize();
+            let _ = win.set_always_on_bottom(false);
+            let _ = win.set_ignore_cursor_events(false);
             win.set_size(LogicalSize::new(width, height))
                 .map_err(|e| e.to_string())?;
             let _ = win.center();
@@ -1555,7 +1794,7 @@ pub async fn hide_agent_webview(app: AppHandle, label: String) -> Result<(), Str
     run_on_main_thread_sync(&app, move || {
         if crate::is_agent_host_mode() {
             if let Some(win) = app_for_ui.get_webview_window(&label_for_ui) {
-                // 勿 hide：屏外静默，保持 WebView2 脚本可跑
+                // 不真正 hide，改为静默放置，以保持 WebView2 脚本继续运行
                 place_host_window_silent(&win)?;
                 mark_host_window_silent(&app_for_ui, &label_for_ui, true);
             }
@@ -1733,10 +1972,10 @@ pub async fn emit_agent_chat_message(
     app: AppHandle,
     agent_id: String,
     role: String,
-    key: i64,
+    key: String,
     text: String,
 ) -> Result<(), String> {
-    emit_agent_chat_event(&app, &agent_id, &role, key, &text)
+    emit_agent_chat_event(&app, &agent_id, &role, &key, &text)
 }
 
 #[tauri::command]
@@ -1819,12 +2058,34 @@ pub async fn agent_bridge_is_loading(app: AppHandle, agent_id: String) -> Result
     Ok(raw.trim() == "true")
 }
 
+fn poll_turn_json(turn: &PollTurn) -> serde_json::Value {
+    json!({
+        "index": turn.index,
+        "text": turn.text,
+    })
+}
+
+#[tauri::command]
+pub async fn agent_bridge_poll_snapshot(
+    app: AppHandle,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    let label = format!("agent-{}", agent_id);
+    let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
+    let snap = parse_poll_snapshot(&raw);
+    Ok(json!({
+        "loading": snap.loading,
+        "lastUser": snap.last_user.as_ref().map(poll_turn_json),
+        "lastAgent": snap.last_agent.as_ref().map(poll_turn_json),
+    }))
+}
+
 #[tauri::command]
 pub async fn peek_agent_response(
     state: State<'_, WebviewState>,
     agent_id: String,
     text: String,
-    response_key: Option<i64>,
+    response_key: Option<String>,
 ) -> Result<(), String> {
     {
         let mut cache = state.peek_cache.lock().map_err(|e| e.to_string())?;

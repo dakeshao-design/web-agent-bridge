@@ -23,6 +23,12 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     };
     webviewView.webview.html = this.getHtml(webviewView.webview);
 
+    // 视图可见时才自动初始化 Agent 站点
+    this.session.setPanelVisible(webviewView.visible);
+    webviewView.onDidChangeVisibility(() => {
+      this.session.setPanelVisible(webviewView.visible);
+    });
+
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg?.type) {
         case 'ready':
@@ -128,14 +134,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="app">
-    <div class="toolbar">
-      <div id="tabs" class="tabs"></div>
-      <div class="toolbar-actions">
-        <button data-cmd="showLogin" title="打开登录窗">登录</button>
-        <button data-cmd="openConfig" title="打开桥接脚本目录">配置</button>
-        <button data-cmd="showPermissions" title="工具权限">权限</button>
-        <button data-cmd="reload" title="重新加载">刷新</button>
-      </div>
+    <div class="agent-tabs-bar">
+      <div id="tabs" class="tabs" role="tablist"></div>
     </div>
     <div id="hostStatus" class="host-status"></div>
     <div id="permissions" class="permissions hidden"></div>
@@ -145,7 +145,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div class="composer-actions">
         <button data-cmd="sendCurrentFile">当前文件</button>
         <button data-cmd="sendSelection">选区</button>
-        <button data-cmd="newChatSession" title="开启新会话并注入 Agent 模式提示词">新会话</button>
+        <button data-cmd="newChatSession" title="开启新会话">新会话</button>
         <div class="debug-tools-wrap">
           <button type="button" id="debugToolsBtn" title="调试工具">调试工具</button>
           <div id="debugMenu" class="debug-menu hidden" role="menu">
@@ -154,7 +154,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
             <button type="button" data-debug="stopTerminal" role="menuitem">Stop Terminal</button>
           </div>
         </div>
-        <button id="sendBtn" class="primary">发送</button>
+        <button id="sendBtn" class="primary" disabled>发送</button>
+      </div>
+      <div class="panel-actions">
+        <button data-cmd="showLogin" title="打开登录窗">登录</button>
+        <button data-cmd="openConfig" title="打开桥接脚本目录">配置</button>
+        <button data-cmd="showPermissions" title="工具权限">权限</button>
+        <button data-cmd="reload" title="重新加载">刷新</button>
       </div>
     </div>
     <div id="logs" class="logs"></div>
