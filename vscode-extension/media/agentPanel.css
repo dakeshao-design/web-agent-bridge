@@ -240,6 +240,18 @@ button.primary:disabled {
   font-size: 0.9em;
   background: transparent;
 }
+.call-tool-result {
+  margin: 0;
+  padding: 8px;
+  border-top: 1px dashed var(--border);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 0.9em;
+  color: var(--muted);
+  background: transparent;
+}
 .md-body table {
   border-collapse: collapse;
   margin: 0.5em 0;

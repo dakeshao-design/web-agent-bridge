@@ -71,8 +71,18 @@
     }
   }
 
+  /** 收集当前已展开 call-tool 的 raw 作为稳定 key */
+  function getOpenCallToolKeys() {
+    const keys = new Set();
+    chatEl.querySelectorAll('details.call-tool-fold[open]').forEach(function (el) {
+      const rawEl = el.querySelector('.call-tool-raw');
+      if (rawEl) keys.add(rawEl.textContent || '');
+    });
+    return keys;
+  }
+
   /** 渲染含可折叠 call-tool 的片段 */
-  function renderDisplayParts(container, parts) {
+  function renderDisplayParts(container, parts, openKeys) {
     parts.forEach(function (part) {
       if (!part || part.kind === 'text') {
         const wrap = document.createElement('div');
@@ -85,6 +95,7 @@
       const details = document.createElement('details');
       details.className = 'call-tool-fold';
       if (part.status) details.dataset.status = part.status;
+      if (openKeys && openKeys.has(part.raw || '')) details.open = true;
       const summary = document.createElement('summary');
       summary.className = 'call-tool-summary';
       summary.textContent = part.summary || 'call-tool';
@@ -93,6 +104,12 @@
       pre.textContent = part.raw || '';
       details.appendChild(summary);
       details.appendChild(pre);
+      if (part.result) {
+        const resultPre = document.createElement('pre');
+        resultPre.className = 'call-tool-result';
+        resultPre.textContent = part.result;
+        details.appendChild(resultPre);
+      }
       container.appendChild(details);
     });
   }
@@ -308,6 +325,7 @@
 
     renderPermissions(snapshot);
 
+    const openCallToolKeys = getOpenCallToolKeys();
     chatEl.innerHTML = '';
     (snapshot.chats || []).forEach(function (c) {
       if (snapshot.activeAgentId && c.agentId !== snapshot.activeAgentId && c.role !== 'system') {
@@ -323,7 +341,7 @@
       if (c.role === 'system') {
         body.textContent = c.text;
       } else if (c.role === 'agent' && Array.isArray(c.displayParts) && c.displayParts.length > 0) {
-        renderDisplayParts(body, c.displayParts);
+        renderDisplayParts(body, c.displayParts, openCallToolKeys);
       } else {
         body.innerHTML = renderMarkdown(c.text);
       }

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   formatCallToolDisplayLine,
+  formatCallToolDisplayResult,
+  formatCallToolDisplayHint,
   splitCallToolDisplayParts,
 } from '../dist/agent/callToolDisplay.js';
 
@@ -125,5 +127,43 @@ const longBetween = [
 const parts6 = splitCallToolDisplayParts(longBetween, () => '成功');
 assert.ok(parts6.some((p) => p.kind === 'text' && /超过二十个字符/.test(p.text)));
 assert.ok(parts6.some((p) => p.kind === 'tool'));
+
+const parts7 = splitCallToolDisplayParts(fenced, () => '成功', () => 'dir listing');
+assert.equal(parts7[1].kind, 'tool');
+if (parts7[1].kind === 'tool') {
+  assert.equal(parts7[1].result, 'dir listing');
+}
+
+const fmtOk = formatCallToolDisplayResult({
+  ok: true,
+  content: 'file body',
+  total_lines: 3,
+});
+assert.equal(fmtOk, 'total_lines: 3\n\nfile body');
+assert.ok(!fmtOk.includes('[SYSTEM]'));
+assert.ok(!/path:/.test(fmtOk));
+
+const fmtErr = formatCallToolDisplayResult({
+  ok: false,
+  message: '工作区未打开',
+});
+assert.equal(fmtErr, '工作区未打开');
+
+const hintBody = formatCallToolDisplayHint(
+  [
+    '[SYSTEM]',
+    'err `unknown_tool`',
+    'message: 工具不存在: foo。',
+    '',
+    '## 可用工具',
+    '',
+    'table',
+  ].join('\n')
+);
+assert.ok(!hintBody.includes('[SYSTEM]'));
+assert.ok(!hintBody.includes('err `unknown_tool`'));
+assert.match(hintBody, /工具不存在: foo/);
+assert.match(hintBody, /可用工具/);
+assert.ok(!/elapsed:/.test(hintBody));
 
 console.log('callToolDisplay ok');

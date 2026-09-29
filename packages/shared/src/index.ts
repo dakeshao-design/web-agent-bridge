@@ -90,6 +90,8 @@ export {
 } from './agent/toolResultMessage.js';
 export {
   formatCallToolDisplayLine,
+  formatCallToolDisplayResult,
+  formatCallToolDisplayHint,
   extractCallToolDisplayMeta,
   splitCallToolDisplayParts,
   callToolDisplayStatusKey,

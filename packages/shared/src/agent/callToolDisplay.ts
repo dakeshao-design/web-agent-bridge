@@ -1,10 +1,75 @@
 import { stripMarkdownLineNumbers } from '../tools/parseCallTool.js';
+import type { ToolApplyResult } from '../tools/types.js';
+import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 export type CallToolDisplayStatus = '进行中' | '成功' | '失败';
 
 export type CallToolDisplayPart =
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; summary: string; raw: string; status: CallToolDisplayStatus };
+  | {
+      kind: 'tool';
+      summary: string;
+      raw: string;
+      status: CallToolDisplayStatus;
+      result?: string;
+    };
+
+/** 侧栏展开用精简正文：无 SYSTEM / 工具名 / 参数回显 */
+export function formatCallToolDisplayResult(result: ToolApplyResult): string {
+  const lines: string[] = [];
+  if (!result.ok && result.message) {
+    lines.push(result.message);
+  }
+  if (result.total_lines !== undefined) {
+    lines.push(`total_lines: ${result.total_lines}`);
+  }
+  if (result.edited_range) {
+    lines.push(`edited_range: ${result.edited_range}`);
+  }
+  if (result.deleted_range) {
+    lines.push(`deleted_range: ${result.deleted_range}`);
+  }
+  if (result.more_offset !== undefined) {
+    lines.push(`more_offset: ${result.more_offset}`);
+  }
+  if (result.content !== undefined && result.content.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(result.content);
+  }
+  return lines.join('\n');
+}
+
+/** 从 hint / denied 等 SYSTEM 文案抽出可读说明 */
+export function formatCallToolDisplayHint(systemText: string): string {
+  const lines = systemText.split(/\r?\n/);
+  const out: string[] = [];
+  let afterBlank = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!afterBlank && trimmed === '') {
+      afterBlank = true;
+      continue;
+    }
+    if (!afterBlank) {
+      if (trimmed === SYSTEM_MARKER) continue;
+      if (/^(ok|err|run)\s+`[^`]+`\s*$/i.test(trimmed)) continue;
+      if (/^status:\s*/i.test(trimmed)) continue;
+      const msg = trimmed.match(/^message:\s*(.*)$/i);
+      if (msg) {
+        out.push(msg[1]);
+        continue;
+      }
+      const hint = trimmed.match(/^hint:\s*(.*)$/i);
+      if (hint) {
+        out.push(hint[1]);
+        continue;
+      }
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n').replace(/^\n+|\n+$/g, '');
+}
 
 const OMIT_ARG = /^(content|content_b64|old_.*|new_.*)$/i;
 const KEY_ARG_ORDER = [
@@ -185,7 +250,12 @@ export function splitCallToolDisplayParts(
     toolName: string,
     keyArgs: string[],
     rawSpan: string
-  ) => CallToolDisplayStatus
+  ) => CallToolDisplayStatus,
+  resolveResult?: (
+    toolName: string,
+    keyArgs: string[],
+    rawSpan: string
+  ) => string | undefined
 ): CallToolDisplayPart[] {
   const normalized = stripMarkdownLineNumbers(text);
   if (!normalized) return [];
@@ -213,11 +283,13 @@ export function splitCallToolDisplayParts(
       const status =
         resolveStatus?.(meta.toolName, meta.keyArgs, span.raw) ??
         (incomplete ? '进行中' : '成功');
+      const result = resolveResult?.(meta.toolName, meta.keyArgs, span.raw);
       parts.push({
         kind: 'tool',
         summary: formatCallToolDisplayLine(meta.toolName, meta.keyArgs, status),
         raw: span.raw,
         status,
+        ...(result ? { result } : {}),
       });
     }
     cursor = span.end;

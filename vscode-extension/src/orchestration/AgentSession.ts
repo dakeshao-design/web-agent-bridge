@@ -16,6 +16,8 @@ import {
   fileOperationsFingerprint,
   FileOperationParser,
   findUnknownCallToolNames,
+  formatCallToolDisplayHint,
+  formatCallToolDisplayResult,
   getToolByAction,
   hasIncompleteCallTool,
   isIncompleteFromLastConversation,
@@ -101,6 +103,8 @@ export class AgentSession {
   private incompleteConfirm = new IncompleteCallToolConfirm();
   /** call-tool 面板摘要状态 */
   private callToolDisplayStatus = new Map<string, CallToolDisplayStatus>();
+  /** call-tool 面板展开结果正文 */
+  private callToolDisplayResult = new Map<string, string>();
   private listeners = new Set<UiListener>();
   private configWatch?: vscode.Disposable;
   private disposed = false;
@@ -258,8 +262,12 @@ export class AgentSession {
           if (c.role !== 'agent') return c;
           return {
             ...c,
-            displayParts: splitCallToolDisplayParts(c.text, (name, keyArgs, raw) =>
-              this.resolveCallToolDisplayStatus(c.agentId, name, keyArgs, raw)
+            displayParts: splitCallToolDisplayParts(
+              c.text,
+              (name, keyArgs, raw) =>
+                this.resolveCallToolDisplayStatus(c.agentId, name, keyArgs, raw),
+              (name, keyArgs, raw) =>
+                this.resolveCallToolDisplayResult(c.agentId, name, keyArgs, raw)
             ),
           };
         }),
@@ -292,28 +300,67 @@ export class AgentSession {
     return '成功';
   }
 
+  private resolveCallToolDisplayResult(
+    agentId: string,
+    toolName: string,
+    keyArgs: string[],
+    raw: string
+  ): string | undefined {
+    const ops = this.callToolParser.parse(raw);
+    if (ops.length > 0) {
+      const fpHit = this.callToolDisplayResult.get(
+        this.opDisplayStatusKey(agentId, ops)
+      );
+      if (fpHit) return fpHit;
+    }
+    return this.callToolDisplayResult.get(
+      callToolDisplayStatusKey(agentId, toolName, keyArgs)
+    );
+  }
+
   private opDisplayStatusKey(agentId: string, ops: FileOperation[]): string {
     return `${agentId}\nfp:${fileOperationsFingerprint(ops)}`;
   }
 
-  private setOpDisplayStatus(
-    agentId: string,
-    op: FileOperation,
-    status: CallToolDisplayStatus
-  ): void {
+  private opDisplayKeys(agentId: string, op: FileOperation): string[] {
     const tool = getToolByAction(op.action);
     const toolName = tool?.name ?? op.action;
     const args = tool?.toArgs(op) ?? { path: op.path };
     const keyArgs = keyArgsFromToolArgs(toolName, args);
-    const keys = [
+    return [
       this.opDisplayStatusKey(agentId, [op]),
       callToolDisplayStatusKey(agentId, toolName, keyArgs),
     ];
+  }
+
+  /** status=进行中且未传 displayResult 时清空结果；传入字符串则写入精简正文 */
+  private setOpDisplayStatus(
+    agentId: string,
+    op: FileOperation,
+    status: CallToolDisplayStatus,
+    displayResult?: string
+  ): void {
+    const keys = this.opDisplayKeys(agentId, op);
     let changed = false;
     for (const key of keys) {
       if (this.callToolDisplayStatus.get(key) === status) continue;
       this.callToolDisplayStatus.set(key, status);
       changed = true;
+    }
+    const shouldWriteResult =
+      displayResult !== undefined || status === '进行中';
+    if (shouldWriteResult) {
+      const text = displayResult ?? '';
+      for (const key of keys) {
+        if (!text) {
+          if (!this.callToolDisplayResult.has(key)) continue;
+          this.callToolDisplayResult.delete(key);
+          changed = true;
+        } else if (this.callToolDisplayResult.get(key) !== text) {
+          this.callToolDisplayResult.set(key, text);
+          changed = true;
+        }
+      }
     }
     if (changed) this.notify();
   }
@@ -321,19 +368,35 @@ export class AgentSession {
   private setTextDisplayStatus(
     agentId: string,
     text: string,
-    status: CallToolDisplayStatus
+    status: CallToolDisplayStatus,
+    displayResult?: string
   ): void {
     let changed = false;
+    const applyResult = (key: string, allow: boolean) => {
+      if (!allow || displayResult === undefined) return;
+      if (!displayResult) {
+        if (!this.callToolDisplayResult.has(key)) return;
+        this.callToolDisplayResult.delete(key);
+        changed = true;
+        return;
+      }
+      if (this.callToolDisplayResult.get(key) === displayResult) return;
+      this.callToolDisplayResult.set(key, displayResult);
+      changed = true;
+    };
     const ops = this.callToolParser.parse(text);
     if (ops.length > 0) {
       const fpKey = this.opDisplayStatusKey(agentId, ops);
       const prev = this.callToolDisplayStatus.get(fpKey);
       // 聊天同步不得把成功/失败打回进行中
-      if (!(status === '进行中' && (prev === '成功' || prev === '失败'))) {
+      const blocked =
+        status === '进行中' && (prev === '成功' || prev === '失败');
+      if (!blocked) {
         if (prev !== status) {
           this.callToolDisplayStatus.set(fpKey, status);
           changed = true;
         }
+        applyResult(fpKey, true);
       }
     }
     for (const part of splitCallToolDisplayParts(text, () => status)) {
@@ -343,9 +406,11 @@ export class AgentSession {
       const key = callToolDisplayStatusKey(agentId, meta.toolName, meta.keyArgs);
       const prev = this.callToolDisplayStatus.get(key);
       if (status === '进行中' && (prev === '成功' || prev === '失败')) continue;
-      if (prev === status) continue;
-      this.callToolDisplayStatus.set(key, status);
-      changed = true;
+      if (prev !== status) {
+        this.callToolDisplayStatus.set(key, status);
+        changed = true;
+      }
+      applyResult(key, true);
     }
     if (changed) this.notify();
   }
@@ -562,6 +627,7 @@ export class AgentSession {
     dropPrefixed(this.unknownToolHints);
     dropPrefixed(this.inflightToolOps);
     dropPrefixed(this.callToolDisplayStatus);
+    dropPrefixed(this.callToolDisplayResult);
 
     this.incompleteConfirm.cancel(agentId);
     this.waitingWatch.delete(agentId);
@@ -989,7 +1055,12 @@ export class AgentSession {
     const cwd = this.fileService.getWorkspaceRoot().trim();
     if (!command) {
       const result = { ok: false, message: 'command 为空' } satisfies ToolApplyResult;
-      this.setOpDisplayStatus(agentId, op, '失败');
+      this.setOpDisplayStatus(
+        agentId,
+        op,
+        '失败',
+        formatCallToolDisplayResult(result)
+      );
       this.addLog(op, 'error', result.message);
       await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
       return {};
@@ -999,7 +1070,12 @@ export class AgentSession {
         ok: false,
         message: '工作区未打开：请在当前窗口用「文件 → 打开文件夹」打开项目',
       } satisfies ToolApplyResult;
-      this.setOpDisplayStatus(agentId, op, '失败');
+      this.setOpDisplayStatus(
+        agentId,
+        op,
+        '失败',
+        formatCallToolDisplayResult(result)
+      );
       this.addLog(op, 'error', result.message);
       await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
       return {};
@@ -1015,7 +1091,12 @@ export class AgentSession {
     const sendFinal = async (result: ToolApplyResult, status: LogStatus) => {
       if (sentFinal) return;
       sentFinal = true;
-      this.setOpDisplayStatus(agentId, op, result.ok ? '成功' : '失败');
+      this.setOpDisplayStatus(
+        agentId,
+        op,
+        result.ok ? '成功' : '失败',
+        formatCallToolDisplayResult(result)
+      );
       this.addLog(op, status, result.message);
       await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
     };
@@ -1042,6 +1123,8 @@ export class AgentSession {
       const all = session.getOutput();
       const neu = all.slice(reported);
       reported = all.length;
+      // 侧栏仅展示累计输出，不含 elapsed / 等待提示
+      this.setOpDisplayStatus(agentId, op, '进行中', all);
       const elapsedSec = Math.round((Date.now() - t0) / 1000);
       const progress = buildPowershellProgressMessage({
         command,
@@ -1113,8 +1196,13 @@ export class AgentSession {
         const hintKey = `${agentId}:unknown:${unknownNames.join(',')}`;
         if (!this.unknownToolHints.has(hintKey)) {
           this.unknownToolHints.add(hintKey);
-          this.setTextDisplayStatus(agentId, text, '失败');
           const hint = buildUnknownToolResult(unknownNames, this.toolPermissions);
+          this.setTextDisplayStatus(
+            agentId,
+            text,
+            '失败',
+            formatCallToolDisplayHint(hint)
+          );
           this.chats.push({ agentId, role: 'user', text: hint });
           await this.sendToolResult(agentId, hint);
           this.notify();
@@ -1147,7 +1235,12 @@ export class AgentSession {
           onConfirm: async () => {
             const limit = this.agents.find((a) => a.id === agentId)?.writeFileLineLimit;
             const hint = buildIncompleteCallToolHint(limit);
-            this.setTextDisplayStatus(agentId, text, '失败');
+            this.setTextDisplayStatus(
+              agentId,
+              text,
+              '失败',
+              formatCallToolDisplayHint(hint)
+            );
             this.chats.push({ agentId, role: 'user', text: hint });
             await this.sendToolResult(agentId, hint);
             this.notify();
@@ -1194,7 +1287,12 @@ export class AgentSession {
       const noWs = '工作区未打开：请在当前窗口用「文件 → 打开文件夹」打开项目';
       for (const op of operations) {
         const result = { ok: false, message: noWs } satisfies ToolApplyResult;
-        this.setOpDisplayStatus(agentId, op, '失败');
+        this.setOpDisplayStatus(
+          agentId,
+          op,
+          '失败',
+          formatCallToolDisplayResult(result)
+        );
         this.addLog(op, 'error', noWs);
         await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
       }
@@ -1214,7 +1312,12 @@ export class AgentSession {
       );
       if (effective === 'deny') {
         const denied = buildDeniedToolResult(toolName);
-        this.setOpDisplayStatus(agentId, op, '失败');
+        this.setOpDisplayStatus(
+          agentId,
+          op,
+          '失败',
+          formatCallToolDisplayHint(denied)
+        );
         this.addLog(op, 'error', '权限禁止');
         await this.sendToolResult(agentId, denied);
         continue;
@@ -1226,7 +1329,12 @@ export class AgentSession {
           '允许'
         );
         if (pick !== '允许') {
-          this.setOpDisplayStatus(agentId, op, '失败');
+          this.setOpDisplayStatus(
+            agentId,
+            op,
+            '失败',
+            formatCallToolDisplayResult({ ok: false, message: '用户取消' })
+          );
           this.addLog(op, 'error', '用户取消');
           this.notify();
           continue;
@@ -1255,7 +1363,12 @@ export class AgentSession {
           void content;
         },
       });
-      this.setOpDisplayStatus(agentId, op, result.ok ? '成功' : '失败');
+      this.setOpDisplayStatus(
+        agentId,
+        op,
+        result.ok ? '成功' : '失败',
+        formatCallToolDisplayResult(result)
+      );
       const toolResultMessage = buildToolResultFromOperation(op, result);
       await this.sendToolResult(agentId, toolResultMessage);
     }
