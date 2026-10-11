@@ -177,7 +177,14 @@ export function buildSkillsPromptSection(skills: readonly AgentSkill[]): string 
   if (alwaysSkills.length) {
     parts.push('## 已注入 Skills', '');
     for (const skill of alwaysSkills) {
-      parts.push(`### ${skill.name}`, '', skill.body.trimEnd(), '');
+      parts.push(
+        `### ${skill.name}`,
+        '',
+        `路径: ${skill.filePath}`,
+        '',
+        skill.body.trimEnd(),
+        ''
+      );
     }
   }
 

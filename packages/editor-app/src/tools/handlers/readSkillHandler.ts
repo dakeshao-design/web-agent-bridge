@@ -18,7 +18,7 @@ export const applyReadSkill: FileToolHandler = async (op, ctx) => {
     return { ok: false, message };
   }
 
-  const message = `已读取 skill ${skill.name}`;
+  const message = `已读取 skill ${skill.name}（${skill.filePath}）`;
   ctx.addLogEntry(op, 'applied', message);
   ctx.publishLastFileOp(op, 'applied', message);
   return { ok: true, message, content: skill.body };
