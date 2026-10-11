@@ -1,4 +1,8 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { PLAN_TEMPLATE_HOME_PATH } from '@my-agent-editor/shared';
 import { AgentPanelProvider } from './views/AgentPanelProvider';
 import { ConfigService } from './services/ConfigService';
 import { AgentHostProcess } from './services/AgentHostProcess';
@@ -9,7 +13,32 @@ import { AgentSession } from './orchestration/AgentSession';
 let session: AgentSession | undefined;
 let hostProcess: AgentHostProcess | undefined;
 
+async function installPlanTemplate(context: vscode.ExtensionContext): Promise<void> {
+  const targetPath = path.join(os.homedir(), PLAN_TEMPLATE_HOME_PATH);
+  const templatePath = context.asAbsolutePath(
+    path.join('templates', 'plans', 'plan-prompt-template.md')
+  );
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  try {
+    await fs.access(targetPath);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  let template: Buffer;
+  try {
+    template = await fs.readFile(templatePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    template = await fs.readFile(
+      path.resolve(context.extensionPath, '..', 'templates', 'plans', 'plan-prompt-template.md')
+    );
+  }
+  await fs.writeFile(targetPath, template);
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  await installPlanTemplate(context);
   const configService = new ConfigService(context);
   await configService.ensureUserConfig();
 
@@ -21,7 +50,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   session = new AgentSession(context, configService, fileService, bridge, hostProcess);
   await session.init();
 
-  const provider = new AgentPanelProvider(context.extensionUri, session);
+  const provider = new AgentPanelProvider(context.extensionUri, session, fileService);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(AgentPanelProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },

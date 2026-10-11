@@ -27,6 +27,8 @@ import {
   findLatestCallToolSource,
   POWERSHELL_PROGRESS_INTERVAL_MS,
   parsePowershellWaitDecision,
+  buildPlanCreationPrompt,
+  createPlanTimestamp,
   type AgentConfig,
   type AgentStatus,
   type AppConfig,
@@ -51,6 +53,7 @@ import {
 } from './components/PowershellPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { DebugToolsDialog } from './components/DebugToolsDialog';
+import { PlanDialog } from './components/PlanDialog';
 import { ContextMenu, type ContextMenuState } from './components/ContextMenu';
 import type { FileOpLogEntry } from './components/FileOpLog';
 import { TauriFileService } from './services/TauriFileService';
@@ -134,6 +137,9 @@ export default function App() {
     sourceText?: string;
   }>(null);
   const [debugDialogBusy, setDebugDialogBusy] = useState(false);
+  const [planDialogOpen, setPlanDialogOpen] = useState(false);
+  const [planContent, setPlanContent] = useState('');
+  const [planBusy, setPlanBusy] = useState(false);
 
   const configLoaderRef = useRef<ConfigLoader | null>(null);
   const userWorkspaceRef = useRef('');
@@ -236,12 +242,6 @@ export default function App() {
         if (prev[agentId] === status) return prev;
         return { ...prev, [agentId]: status };
       });
-      if (status === 'waiting') {
-        const watch = waitingWatchRef.current.get(agentId);
-        if (watch) {
-          watch.changeSince = Date.now();
-        }
-      }
     },
     []
   );
@@ -1553,6 +1553,52 @@ export default function App() {
     setAgentStatus(targetId, 'waiting');
   }, [workspaceRoot, logUserMessage, setAgentStatus]);
 
+  const handleCreatePlan = useCallback(async () => {
+    const root = workspaceRoot || userWorkspaceRef.current || fileService.getWorkspaceRoot();
+    const targetId = activeAgentIdRef.current;
+    const description = planContent.trim();
+    if (!description) return;
+    if (!root) {
+      await message('请先打开工作区。', { title: '创建计划', kind: 'warning' });
+      return;
+    }
+    if (!targetId) {
+      await message('请先选择一个 Agent。', { title: '创建计划', kind: 'warning' });
+      return;
+    }
+
+    setPlanBusy(true);
+    try {
+      const template = await fileService.readPlanTemplate();
+      if (!template.trim()) throw new Error('计划模板为空');
+      const prompt = buildPlanCreationPrompt({
+        description,
+        template,
+        workspaceRoot: root,
+        timestamp: createPlanTimestamp(),
+      });
+      await ensureAgentWebview(targetId);
+      await logAndSendToAgent(prompt, '创建计划', targetId);
+      setPlanDialogOpen(false);
+      setPlanContent('');
+      void syncAgentWebviewVisibility();
+    } catch (err) {
+      console.error('创建计划失败', err);
+      await message(`创建计划失败：${err instanceof Error ? err.message : String(err)}`, {
+        title: '创建计划',
+        kind: 'error',
+      });
+    } finally {
+      setPlanBusy(false);
+    }
+  }, [
+    workspaceRoot,
+    planContent,
+    ensureAgentWebview,
+    logAndSendToAgent,
+    syncAgentWebviewVisibility,
+  ]);
+
   const handleDebugDialogPrimary = useCallback(async () => {
     if (!debugDialog) return;
     setDebugDialogBusy(true);
@@ -1866,7 +1912,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleOpen, handleSave, handleSaveAs, handleSendSelection]);
 
-  const activeStatus = activeAgentId ? agentBridge.getStatus(activeAgentId) : 'idle';
+  const activeStatus = activeAgentId ? agentStatuses[activeAgentId] ?? 'idle' : 'idle';
 
   return (
     <div className="app">
@@ -1892,6 +1938,22 @@ export default function App() {
             title="开启新会话并注入 Agent 模式提示词"
           >
             新会话
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setPlanDialogOpen(true);
+              void hideAllAgentWebviews();
+            }}
+            disabled={
+              !workspaceRoot ||
+              !activeAgentId ||
+              activeStatus === 'sending' ||
+              activeStatus === 'waiting'
+            }
+            title="根据描述创建工作区计划"
+          >
+            计划
           </button>
           <button type="button" onClick={openDebugToolsMenu} title="调试工具">
             调试工具
@@ -2003,6 +2065,19 @@ export default function App() {
           debugDialog?.kind === 'agentMode' ? !workspaceRoot : debugDialog?.body === '(无 call-tool)'
         }
         busy={debugDialogBusy}
+      />
+      <PlanDialog
+        open={planDialogOpen}
+        content={planContent}
+        busy={planBusy}
+        onContentChange={setPlanContent}
+        onCreate={() => void handleCreatePlan()}
+        onClose={() => {
+          if (planBusy) return;
+          setPlanDialogOpen(false);
+          setPlanContent('');
+          void syncAgentWebviewVisibility();
+        }}
       />
     </div>
   );

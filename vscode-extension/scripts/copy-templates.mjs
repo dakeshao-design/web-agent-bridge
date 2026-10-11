@@ -11,14 +11,14 @@ fs.rmSync(dest, { recursive: true, force: true });
 fs.mkdirSync(path.join(dest, 'config'), { recursive: true });
 fs.mkdirSync(path.join(dest, 'scripts'), { recursive: true });
 fs.mkdirSync(path.join(dest, 'skills'), { recursive: true });
+fs.mkdirSync(path.join(dest, 'plans'), { recursive: true });
 
 fs.copyFileSync(
   path.join(repoRoot, 'config', 'app.config.json'),
   path.join(dest, 'config', 'app.config.json')
 );
 
-for (const name of fs.readdirSync(path.join(repoRoot, 'scripts'))) {
-  if (!name.endsWith('.js') && !name.endsWith('.md')) continue;
+for (const name of ['bridge-default.js', 'bridge-readme.md']) {
   fs.copyFileSync(
     path.join(repoRoot, 'scripts', name),
     path.join(dest, 'scripts', name)
@@ -29,6 +29,11 @@ const skillReadme = path.join(repoRoot, 'skills', 'skill-readme.md');
 if (fs.existsSync(skillReadme)) {
   fs.copyFileSync(skillReadme, path.join(dest, 'skills', 'skill-readme.md'));
 }
+
+fs.copyFileSync(
+  path.join(repoRoot, 'plans', 'plan-prompt-template.md'),
+  path.join(dest, 'plans', 'plan-prompt-template.md')
+);
 
 console.log('[copy-templates] done ->', dest);
 

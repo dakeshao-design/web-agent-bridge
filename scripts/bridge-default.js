@@ -138,6 +138,8 @@
         loading: !!snap.loading,
         lastUser: normalizeMessage(snap.lastUser),
         lastAgent: normalizeMessage(snap.lastAgent),
+        preUser: normalizeMessage(snap.preUser),
+        preAgent: normalizeMessage(snap.preAgent),
         responseRoot: snap.responseRoot || null,
       };
     }
@@ -151,6 +153,12 @@
           : null,
         lastAgent: s.lastAgent
           ? { index: String(s.lastAgent.index ?? ''), text: String(s.lastAgent.text || '') }
+          : null,
+        preUser: s.preUser
+          ? { index: String(s.preUser.index ?? ''), text: String(s.preUser.text || '') }
+          : null,
+        preAgent: s.preAgent
+          ? { index: String(s.preAgent.index ?? ''), text: String(s.preAgent.text || '') }
           : null,
       };
     }

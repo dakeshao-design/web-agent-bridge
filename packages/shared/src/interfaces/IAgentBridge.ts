@@ -6,6 +6,8 @@ export type BridgePollSnapshot = {
   loading: boolean;
   lastUser: BridgePollTurn | null;
   lastAgent: BridgePollTurn | null;
+  preUser: BridgePollTurn | null;
+  preAgent: BridgePollTurn | null;
 };
 
 /** 工具回传 / 无 key → 空串；兼容旧 Host 的 -1 */

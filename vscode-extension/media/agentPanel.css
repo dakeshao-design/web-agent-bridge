@@ -438,3 +438,52 @@ textarea {
   padding: 8px 10px;
   border-top: 1px solid var(--border);
 }
+.plan-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.plan-overlay.hidden { display: none; }
+.plan-dialog {
+  width: min(560px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.plan-dialog-header,
+.plan-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.plan-dialog-header h2 {
+  margin: 0;
+  font-size: 13px;
+}
+.plan-dialog-header button {
+  font-size: 16px;
+  line-height: 1;
+}
+.plan-dialog > textarea {
+  min-height: 140px;
+  max-height: 55vh;
+  resize: vertical;
+}
+.plan-error {
+  color: #e66;
+  white-space: pre-wrap;
+}
+.plan-dialog-footer {
+  justify-content: flex-end;
+}

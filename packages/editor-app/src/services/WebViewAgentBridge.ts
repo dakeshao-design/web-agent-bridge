@@ -227,12 +227,16 @@ export class WebViewAgentBridge implements IAgentBridge {
     loading: boolean;
     lastUser: { index: string; text: string } | null;
     lastAgent: { index: string; text: string } | null;
+    preUser: { index: string; text: string } | null;
+    preAgent: { index: string; text: string } | null;
   }> {
     try {
       const res = await invoke<{
         loading?: boolean;
         lastUser?: { index?: string | number; text?: string } | null;
         lastAgent?: { index?: string | number; text?: string } | null;
+        preUser?: { index?: string | number; text?: string } | null;
+        preAgent?: { index?: string | number; text?: string } | null;
       }>('agent_bridge_poll_snapshot', { agentId });
       const toTurn = (v: { index?: string | number; text?: string } | null | undefined) => {
         if (!v || typeof v.text !== 'string') return null;
@@ -243,9 +247,11 @@ export class WebViewAgentBridge implements IAgentBridge {
         loading: !!res.loading,
         lastUser: toTurn(res.lastUser),
         lastAgent: toTurn(res.lastAgent),
+        preUser: toTurn(res.preUser),
+        preAgent: toTurn(res.preAgent),
       };
     } catch {
-      return { loading: false, lastUser: null, lastAgent: null };
+      return { loading: false, lastUser: null, lastAgent: null, preUser: null, preAgent: null };
     }
   }
 

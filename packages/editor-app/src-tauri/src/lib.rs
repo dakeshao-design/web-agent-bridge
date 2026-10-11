@@ -4,6 +4,7 @@ mod host_server;
 mod shell;
 mod webview_bridge;
 
+use std::fs;
 use tauri::Manager;
 
 #[cfg(debug_assertions)]
@@ -43,6 +44,22 @@ fn is_admin_mode_cmd() -> bool {
 #[tauri::command(rename = "is_agent_host_mode")]
 fn is_agent_host_mode_cmd() -> bool {
     is_agent_host_mode()
+}
+
+fn install_plan_template(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let home = app.path().home_dir()?;
+    let parent = home.join(".web-agent-bridge").join("plans");
+    let target = parent.join("plan-prompt-template.md");
+    if target.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(parent)?;
+    fs::write(
+        target,
+        include_str!("../../../../plans/plan-prompt-template.md"),
+    )?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -87,6 +104,7 @@ pub fn run() {
             is_agent_host_mode_cmd,
         ])
         .setup(move |app| {
+            install_plan_template(app.handle())?;
             let _ = get_user_config_root(app.handle().clone());
             let window = app.get_webview_window("main").expect("main window");
             webview_bridge::apply_webview_devtools(

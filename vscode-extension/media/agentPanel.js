@@ -14,9 +14,17 @@
   const debugDialogPrimary = document.getElementById('debugDialogPrimary');
   const debugDialogClose = document.getElementById('debugDialogClose');
   const debugDialogCloseX = document.getElementById('debugDialogCloseX');
+  const planBtn = document.getElementById('planBtn');
+  const planOverlay = document.getElementById('planOverlay');
+  const planContent = document.getElementById('planContent');
+  const planError = document.getElementById('planError');
+  const planCreateBtn = document.getElementById('planCreateBtn');
+  const planDialogClose = document.getElementById('planDialogClose');
+  const planDialogCloseX = document.getElementById('planDialogCloseX');
   let showPermissions = false;
   let lastSnapshot = null;
   let debugDialogKind = null;
+  let planSubmitting = false;
 
   if (typeof marked !== 'undefined') {
     marked.setOptions({
@@ -125,6 +133,34 @@
     if (debugOverlay) debugOverlay.classList.add('hidden');
   }
 
+  function closePlanDialog() {
+    if (planSubmitting) return;
+    planOverlay.classList.add('hidden');
+    planContent.value = '';
+    planError.textContent = '';
+    updatePlanCreateButton();
+  }
+
+  function updatePlanCreateButton() {
+    planContent.disabled = planSubmitting;
+    planDialogClose.disabled = planSubmitting;
+    planDialogCloseX.disabled = planSubmitting;
+    planCreateBtn.disabled =
+      planSubmitting ||
+      !planContent.value.trim() ||
+      !lastSnapshot ||
+      !lastSnapshot.activeAgentId ||
+      !lastSnapshot.workspaceRoot;
+    planCreateBtn.textContent = planSubmitting ? '创建中…' : '创建计划';
+  }
+
+  function openPlanDialog() {
+    planError.textContent = '';
+    planOverlay.classList.remove('hidden');
+    updatePlanCreateButton();
+    planContent.focus();
+  }
+
   function openDebugDialog(kind, title, body) {
     debugDialogKind = kind;
     if (debugDialogTitle) debugDialogTitle.textContent = title || '';
@@ -134,6 +170,23 @@
       debugDialogPrimary.disabled = kind === 'lastCallTool' && body === '(无 call-tool)';
     }
     if (debugOverlay) debugOverlay.classList.remove('hidden');
+  }
+
+  if (planBtn) planBtn.addEventListener('click', openPlanDialog);
+  if (planDialogClose) planDialogClose.addEventListener('click', closePlanDialog);
+  if (planDialogCloseX) planDialogCloseX.addEventListener('click', closePlanDialog);
+  if (planContent) {
+    planContent.addEventListener('input', updatePlanCreateButton);
+  }
+  if (planCreateBtn) {
+    planCreateBtn.addEventListener('click', function () {
+      const description = planContent.value.trim();
+      if (!description || planSubmitting) return;
+      planSubmitting = true;
+      planError.textContent = '';
+      updatePlanCreateButton();
+      post('createPlan', { description: description });
+    });
   }
 
   document.querySelectorAll('[data-cmd]').forEach(function (btn) {
@@ -322,6 +375,8 @@
     const busy = activeSt === 'sending' || activeSt === 'waiting';
     const pendingInit = !activeSt && !!snapshot.hostReady;
     sendBtn.disabled = !activeId || busy || pendingInit;
+    if (planBtn) planBtn.disabled = !activeId || busy || pendingInit || !snapshot.workspaceRoot;
+    updatePlanCreateButton();
 
     renderPermissions(snapshot);
 
@@ -372,6 +427,15 @@
     }
     if (msg && msg.type === 'debugDialog') {
       openDebugDialog(msg.kind, msg.title, msg.body);
+    }
+    if (msg && msg.type === 'planCreated') {
+      planSubmitting = false;
+      closePlanDialog();
+    }
+    if (msg && msg.type === 'planError') {
+      planSubmitting = false;
+      planError.textContent = String(msg.message || '创建计划失败');
+      updatePlanCreateButton();
     }
   });
 

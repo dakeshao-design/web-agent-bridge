@@ -180,6 +180,8 @@ export class AgentHostBridge implements IAgentBridge {
     loading: boolean;
     lastUser: { index: string; text: string } | null;
     lastAgent: { index: string; text: string } | null;
+    preUser: { index: string; text: string } | null;
+    preAgent: { index: string; text: string } | null;
   }> {
     try {
       const res = (await this.host.request(
@@ -189,6 +191,8 @@ export class AgentHostBridge implements IAgentBridge {
         loading?: boolean;
         lastUser?: { index?: string | number; text?: string } | null;
         lastAgent?: { index?: string | number; text?: string } | null;
+        preUser?: { index?: string | number; text?: string } | null;
+        preAgent?: { index?: string | number; text?: string } | null;
       };
       const toTurn = (v: { index?: string | number; text?: string } | null | undefined) => {
         if (!v || typeof v.text !== 'string') return null;
@@ -199,9 +203,11 @@ export class AgentHostBridge implements IAgentBridge {
         loading: !!res.loading,
         lastUser: toTurn(res.lastUser),
         lastAgent: toTurn(res.lastAgent),
+        preUser: toTurn(res.preUser),
+        preAgent: toTurn(res.preAgent),
       };
     } catch {
-      return { loading: false, lastUser: null, lastAgent: null };
+      return { loading: false, lastUser: null, lastAgent: null, preUser: null, preAgent: null };
     }
   }
 

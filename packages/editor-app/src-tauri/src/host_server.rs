@@ -357,6 +357,8 @@ fn handle(
                 "loading": snap.get("loading").cloned().unwrap_or(json!(false)),
                 "lastUser": snap.get("lastUser").cloned().unwrap_or(json!(null)),
                 "lastAgent": snap.get("lastAgent").cloned().unwrap_or(json!(null)),
+                "preUser": snap.get("preUser").cloned().unwrap_or(json!(null)),
+                "preAgent": snap.get("preAgent").cloned().unwrap_or(json!(null)),
             }))
         }
         (Method::Get, "/agents/composer-ready") => {

@@ -13,6 +13,20 @@ VS Code sidebar → Extension Host → Agent Host (WebView2) → site scripts
 - pnpm
 - Rust / Tauri toolchain (desktop & host)
 
+On Windows, if `corepack enable pnpm` fails with `EPERM` under
+`C:\Program Files\nodejs`, open PowerShell as Administrator and run:
+
+```bash
+corepack enable pnpm
+```
+
+After the shim is enabled, use `pnpm` from a regular terminal. For a one-off
+command that does not need the global shim, Corepack can also invoke pnpm directly:
+
+```bash
+corepack pnpm install
+```
+
 ## Quick start
 
 ```bash
@@ -48,7 +62,7 @@ On first run, `scripts/bridge-readme.md` and `skills/skill-readme.md` are seeded
 
 Put `SKILL.md` under:
 
-- Workspace: `{workspace}/.web-aget-bridge/skills/<name>/`
+- Workspace: `{workspace}/.web-agent-bridge/skills/<name>/`
 - User: `%USERPROFILE%\.web-agent-bridge\skills\<name>\`
 
 Frontmatter: `name`, `description`, optional `inject` (`auto` | `always` | `manual`). Agent loads via `read_skill` by name. Workspace wins on name clash. If `read_skill` is denied, skills are not disclosed.

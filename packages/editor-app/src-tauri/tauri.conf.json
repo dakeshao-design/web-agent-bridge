@@ -39,7 +39,8 @@
       "../../../config/app.config.json": "config/app.config.json",
       "../../../scripts/bridge-readme.md": "scripts/bridge-readme.md",
       "../../../scripts/bridge-default.js": "scripts/bridge-default.js",
-      "../../../skills/skill-readme.md": "skills/skill-readme.md"
+      "../../../skills/skill-readme.md": "skills/skill-readme.md",
+      "../../../plans/plan-prompt-template.md": "plans/plan-prompt-template.md"
     }
   },
   "plugins": {}

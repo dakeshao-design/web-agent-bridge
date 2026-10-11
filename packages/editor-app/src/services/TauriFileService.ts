@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 import { readTextFile, writeTextFile, remove, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { IFileService } from '@my-agent-editor/shared';
+import { PLAN_TEMPLATE_HOME_PATH, type IFileService } from '@my-agent-editor/shared';
 import { prepareAppendContent } from '@my-agent-editor/shared';
 import { isAbsolutePath, resolvePath, normalizeWorkspaceRoot, resolveListDir } from './file/pathUtils';
 import { listDirectoryEntries, type FileTreeEntry } from './file/fileTree';
@@ -235,9 +235,11 @@ export class TauriFileService implements IFileService {
 
 
   async readConfigFile(relativePath: string): Promise<string> {
-
     return invoke<string>('read_config_file', { relativePath });
+  }
 
+  async readPlanTemplate(): Promise<string> {
+    return readTextFile(PLAN_TEMPLATE_HOME_PATH, { baseDir: BaseDirectory.Home });
   }
 
   async writeConfigFile(relativePath: string, content: string): Promise<void> {
@@ -272,5 +274,4 @@ export class TauriFileService implements IFileService {
   }
 
 }
-
 

@@ -8,7 +8,7 @@ Skill 是给 Agent 用的专用工作流说明：Markdown 文件，经发现与�
 
 | 范围 | 路径 |
 |------|------|
-| 工作区 | `{workspace}/.web-aget-bridge/skills/<name>/SKILL.md` |
+| 工作区 | `{workspace}/.web-agent-bridge/skills/<name>/SKILL.md` |
 | 用户级 | `%USERPROFILE%\.web-agent-bridge\skills\<name>\SKILL.md` |
 
 规则：
@@ -22,7 +22,7 @@ Skill 是给 Agent 用的专用工作流说明：Markdown 文件，经发现与�
 推荐每个 skill 单独一目录：
 
 ```
-.web-aget-bridge/skills/   # 或用户级 …\.web-agent-bridge\skills\
+.web-agent-bridge/skills/   # 或用户级 …\.web-agent-bridge\skills\
 └── my-workflow/
     ├── SKILL.md           # 必填
     ├── reference/         # 可选，细节参考

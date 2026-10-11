@@ -23,6 +23,7 @@ import {
   isIncompleteFromLastConversation,
   IncompleteCallToolConfirm,
   isToolCallAlreadyReported,
+  isToolResultEcho,
   keyArgsFromToolArgs,
   mergeToolPermissions,
   buildSelectionMessage,
@@ -46,9 +47,11 @@ import {
   type ToolApplyResult,
   type ToolPermissionMode,
   type ToolPermissionsConfig,
+  type BridgePollSnapshot,
   pollSnapshotFingerprint,
 } from '@my-agent-editor/shared';
 import type { ConfigService } from '../services/ConfigService';
+import { ConversationLogService } from '../services/ConversationLogService';
 import type { VscodeFileService } from '../services/VscodeFileService';
 import type { AgentHostBridge } from '../services/AgentHostBridge';
 import type { AgentHostProcess } from '../services/AgentHostProcess';
@@ -117,10 +120,12 @@ export class AgentSession {
       changeSince: number;
     }
   >();
+  private lastPollSnapshots = new Map<string, BridgePollSnapshot>();
   private waitingPollTimer?: ReturnType<typeof setInterval>;
   /** 对话同步去重：agentId:role:key */
   private loggedChatKeys = new Set<string>();
   private loggedAgentTexts = new Map<string, string>();
+  private processedToolResponses = new Set<string>();
   /** 自动打开的登录窗，就绪后才 hide */
   private autoOpenedLogin = new Set<string>();
   /** 登录探测世代号，递增即取消 */
@@ -138,7 +143,53 @@ export class AgentSession {
     private readonly fileService: VscodeFileService,
     private readonly bridge: AgentHostBridge,
     private readonly host: AgentHostProcess
-  ) {}
+  ) {
+    this.conversationLogs = new ConversationLogService(() =>
+      this.fileService.getWorkspaceRoot()
+    );
+  }
+
+  private readonly conversationLogs: ConversationLogService;
+
+  private async beginLogSession(agentId: string): Promise<void> {
+    try {
+      await this.conversationLogs.beginSession(agentId);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `创建日志文件失败: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  private async saveChatLog(
+    agentId: string,
+    role: 'user' | 'agent',
+    content: string
+  ): Promise<void> {
+    const agentName = this.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+    try {
+      await this.conversationLogs.addChatEntry(role, agentId, agentName, content);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `保存日志失败: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  private async saveBridgeLog(
+    agentId: string,
+    direction: 'request' | 'response' | 'copy',
+    content: string
+  ): Promise<void> {
+    const agentName = this.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
+    try {
+      await this.conversationLogs.addBridgeEntry(direction, agentId, agentName, content);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `保存日志失败: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
 
   /** 是否已打开工作区文件夹 */
   private hasWorkspace(): boolean {
@@ -229,6 +280,18 @@ export class AgentSession {
       }
 
       const snap = await this.bridge.getPollSnapshot(agentId);
+      const previousSnapshot = this.lastPollSnapshots.get(agentId);
+      if (
+        previousSnapshot &&
+        this.updateGrowingAgentReply(agentId, previousSnapshot, snap)
+      ) {
+        const latest = [...this.chats]
+          .reverse()
+          .find((chat) => chat.agentId === agentId && chat.role === 'agent');
+        if (latest) await this.saveChatLog(agentId, 'agent', latest.text);
+        this.notify();
+      }
+      this.lastPollSnapshots.set(agentId, snap);
       const fingerprint = pollSnapshotFingerprint(snap);
       let watch = this.waitingWatch.get(agentId);
       if (!watch) {
@@ -435,14 +498,21 @@ export class AgentSession {
     this.bridge.onResponse((agentId, text, key) =>
       this.handleAgentResponse(agentId, text, key)
     );
-    this.bridge.onChatMessage((agentId, role, key, text) => {
+    this.bridge.onChatMessage(async (agentId, role, key, text) => {
+      if (role === 'user' && !isToolResultEcho(text)) {
+        this.clearProcessedToolResponses(agentId);
+      }
       this.incompleteConfirm.onContentChange(agentId, text);
       if (!this.acceptSyncedChat(agentId, role, key, text)) {
         return;
       }
+      await this.saveChatLog(agentId, role, text);
       // 转圈由 waiting 轮询根据 pollSnapshot 决定，聊天同步不主动置 idle
       this.notify();
     });
+    this.bridge.onBridgeComm((agentId, direction, content) =>
+      this.saveBridgeLog(agentId, direction, content)
+    );
     this.bridge.onNewChatOnloadAgentMode(async (agentId) => {
       if (this.onloadAgentModeDone.has(agentId)) return;
       const agent = this.agents.find((a) => a.id === agentId);
@@ -463,6 +533,7 @@ export class AgentSession {
     });
     this.context.subscriptions.push(
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        this.conversationLogs.resetTargets();
         void this.tryAutoInitAgentSites();
       })
     );
@@ -595,7 +666,9 @@ export class AgentSession {
       wireText = await this.buildDeferredAgentModeWireText(agentId, text);
       this.agentModeEnabled = true;
     }
+    this.clearProcessedToolResponses(agentId);
     this.chats.push({ agentId, role: 'user', text });
+    await this.saveChatLog(agentId, 'user', text);
     this.setStatus(agentId, 'sending');
     await this.bridge.sendMessage(agentId, wireText);
     this.setStatus(agentId, 'waiting');
@@ -623,6 +696,7 @@ export class AgentSession {
     };
     dropPrefixed(this.loggedChatKeys);
     dropPrefixed(this.loggedAgentTexts);
+    this.clearProcessedToolResponses(agentId);
     dropPrefixed(this.incompleteHints);
     dropPrefixed(this.unknownToolHints);
     dropPrefixed(this.inflightToolOps);
@@ -631,6 +705,7 @@ export class AgentSession {
 
     this.incompleteConfirm.cancel(agentId);
     this.waitingWatch.delete(agentId);
+    this.lastPollSnapshots.delete(agentId);
 
     const pending = this.pendingDecisions.get(agentId);
     if (pending) {
@@ -767,6 +842,7 @@ export class AgentSession {
       await this.bridge.newChatSession(agentId);
       await new Promise((r) => setTimeout(r, 500));
       this.resetAgentConversationState(agentId);
+      await this.beginLogSession(agentId);
       this.markPendingAgentModeInjection(agentId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -963,6 +1039,76 @@ export class AgentSession {
           return true;
         }
       }
+
+      const lastUserIndex = this.chats.reduce(
+        (index, chat, chatIndex) =>
+          chat.agentId === agentId && chat.role === 'user' ? chatIndex : index,
+        -1
+      );
+      let latestAgentIndex = -1;
+      for (let i = this.chats.length - 1; i > lastUserIndex; i--) {
+        const chat = this.chats[i];
+        if (chat.agentId === agentId && chat.role === 'agent') {
+          latestAgentIndex = i;
+          break;
+        }
+      }
+      if (latestAgentIndex >= 0) {
+        const previous = this.chats[latestAgentIndex];
+        if (key === '') {
+          const previousToolBlocks = splitCallToolDisplayParts(previous.text)
+            .filter((part) => part.kind === 'tool')
+            .map((part) =>
+              part.raw.match(/BEGIN_TOOL\s*:[\s\S]*?(?:\bEND_TOOL\b|$)/i)?.[0].trim() ??
+              part.raw.trim()
+            );
+          const currentParts = splitCallToolDisplayParts(text);
+          const currentToolBlocks = currentParts
+            .filter((part) => part.kind === 'tool')
+            .map((part) =>
+              part.raw.match(/BEGIN_TOOL\s*:[\s\S]*?(?:\bEND_TOOL\b|$)/i)?.[0].trim() ??
+              part.raw.trim()
+            );
+          const containsOnlyToolBlocks =
+            currentToolBlocks.length > 0 &&
+            currentParts.every(
+              (part) => part.kind === 'tool' || !part.text.trim()
+            );
+          if (
+            containsOnlyToolBlocks &&
+            currentToolBlocks.every((block) => previousToolBlocks.includes(block))
+          ) {
+            return false;
+          }
+        }
+
+        const isSameReply =
+          previous.text === text ||
+          (text.length > previous.text.length && text.startsWith(previous.text)) ||
+          (previous.text.length > text.length && previous.text.startsWith(text));
+        if (isSameReply) {
+          const previousKey = previous.key;
+          const isGrowth = text.length > previous.text.length;
+          if (isGrowth) previous.text = text;
+          if (key !== '' && previousKey !== key) {
+            if (previousKey) {
+              const previousDedupeKey = `${agentId}:agent:${previousKey}`;
+              this.loggedChatKeys.delete(previousDedupeKey);
+              this.loggedAgentTexts.delete(previousDedupeKey);
+            }
+            previous.key = key;
+          }
+          if (key !== '') {
+            this.loggedChatKeys.add(dedupeKey);
+            this.loggedAgentTexts.set(dedupeKey, previous.text);
+          }
+          if (isGrowth && text.includes('BEGIN_TOOL')) {
+            this.setTextDisplayStatus(agentId, text, '进行中');
+          }
+          return isGrowth;
+        }
+      }
+
       if (key !== '') {
         this.loggedChatKeys.add(dedupeKey);
         this.loggedAgentTexts.set(dedupeKey, text);
@@ -1022,6 +1168,74 @@ export class AgentSession {
       }
     }
     return -1;
+  }
+
+  private clearProcessedToolResponses(agentId: string): void {
+    const prefix = `${agentId}\n`;
+    for (const key of this.processedToolResponses) {
+      if (key.startsWith(prefix)) this.processedToolResponses.delete(key);
+    }
+  }
+
+  private updateGrowingAgentReply(
+    agentId: string,
+    previous: BridgePollSnapshot,
+    current: BridgePollSnapshot
+  ): boolean {
+    const previousAgent = previous.lastAgent;
+    const currentAgent = current.lastAgent;
+    if (
+      !previousAgent ||
+      !currentAgent ||
+      !previousAgent.index ||
+      !currentAgent.index ||
+      previousAgent.index === currentAgent.index
+    ) {
+      return false;
+    }
+
+    const sameText = (
+      left: { text: string } | null,
+      right: { text: string } | null
+    ) => (left?.text ?? null) === (right?.text ?? null);
+    if (
+      !sameText(previous.preUser, current.preUser) ||
+      !sameText(previous.preAgent, current.preAgent) ||
+      !sameText(previous.lastUser, current.lastUser) ||
+      !previous.lastUser ||
+      !current.lastUser ||
+      currentAgent.text.length <= previousAgent.text.length ||
+      !currentAgent.text.startsWith(previousAgent.text)
+    ) {
+      return false;
+    }
+
+    const previousIndex = this.findChatIndex(agentId, 'agent', previousAgent.index);
+    if (previousIndex < 0) return false;
+    const currentChat = this.chats[previousIndex];
+    if (
+      currentChat.text.length >= currentAgent.text.length ||
+      !currentAgent.text.startsWith(currentChat.text)
+    ) {
+      return false;
+    }
+
+    const previousDedupeKey = `${agentId}:agent:${previousAgent.index}`;
+    const currentDedupeKey = `${agentId}:agent:${currentAgent.index}`;
+    const duplicateIndex = this.findChatIndex(agentId, 'agent', currentAgent.index);
+    if (duplicateIndex >= 0 && duplicateIndex !== previousIndex) {
+      this.chats.splice(duplicateIndex, 1);
+    }
+    currentChat.key = currentAgent.index;
+    currentChat.text = currentAgent.text;
+    this.loggedChatKeys.delete(previousDedupeKey);
+    this.loggedAgentTexts.delete(previousDedupeKey);
+    this.loggedChatKeys.add(currentDedupeKey);
+    this.loggedAgentTexts.set(currentDedupeKey, currentAgent.text);
+    if (currentAgent.text.includes('BEGIN_TOOL')) {
+      this.setTextDisplayStatus(agentId, currentAgent.text, '进行中');
+    }
+    return true;
   }
 
   private waitNextAgentReply(agentId: string): Promise<string | null> {
@@ -1204,6 +1418,7 @@ export class AgentSession {
             formatCallToolDisplayHint(hint)
           );
           this.chats.push({ agentId, role: 'user', text: hint });
+          await this.saveChatLog(agentId, 'user', hint);
           await this.sendToolResult(agentId, hint);
           this.notify();
         } else {
@@ -1242,6 +1457,7 @@ export class AgentSession {
               formatCallToolDisplayHint(hint)
             );
             this.chats.push({ agentId, role: 'user', text: hint });
+            await this.saveChatLog(agentId, 'user', hint);
             await this.sendToolResult(agentId, hint);
             this.notify();
           },
@@ -1271,6 +1487,12 @@ export class AgentSession {
         this.setStatus(agentId, 'waiting');
         return;
       }
+      const responseKey = `${agentId}\n${text}`;
+      if (this.processedToolResponses.has(responseKey)) {
+        this.setStatus(agentId, 'waiting');
+        return;
+      }
+      this.processedToolResponses.add(responseKey);
     }
 
     if (!force) {
@@ -1404,6 +1626,7 @@ export class AgentSession {
       this.waitingPollTimer = undefined;
     }
     this.waitingWatch.clear();
+    this.lastPollSnapshots.clear();
     this.incompleteConfirm.clearAll();
     for (const pending of this.pendingDecisions.values()) {
       pending.resolve(null);

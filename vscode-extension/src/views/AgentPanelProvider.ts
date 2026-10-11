@@ -1,5 +1,14 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  PLAN_TEMPLATE_HOME_PATH,
+  buildPlanCreationPrompt,
+  createPlanTimestamp,
+} from '@my-agent-editor/shared';
 import type { AgentSession } from '../orchestration/AgentSession';
+import type { VscodeFileService } from '../services/VscodeFileService';
 
 export class AgentPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'webAgentBridge.panel';
@@ -8,7 +17,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   constructor(
     private readonly extensionUri: vscode.Uri,
-    private readonly session: AgentSession
+    private readonly session: AgentSession,
+    private readonly fileService: VscodeFileService
   ) {}
 
   resolveWebviewView(
@@ -40,6 +50,40 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         case 'send':
           await this.session.sendChat(String(msg.text || ''));
           break;
+        case 'createPlan': {
+          const description = String(msg.description || '').trim();
+          const snapshot = this.session.getSnapshot();
+          const agentId = snapshot.activeAgentId;
+          const workspaceRoot = this.fileService.getWorkspaceRoot();
+          try {
+            if (!description) throw new Error('请输入计划内容。');
+            if (!workspaceRoot) throw new Error('请先打开工作区。');
+            if (!agentId) throw new Error('请先选择一个 Agent。');
+            const status = snapshot.statuses[agentId];
+            if (status === 'sending' || status === 'waiting') {
+              throw new Error('当前 Agent 正在处理消息，请稍后再试。');
+            }
+            const template = await fs.readFile(
+              path.join(os.homedir(), PLAN_TEMPLATE_HOME_PATH),
+              'utf8'
+            );
+            if (!template.trim()) throw new Error('计划模板为空。');
+            const prompt = buildPlanCreationPrompt({
+              description,
+              template,
+              workspaceRoot,
+              timestamp: createPlanTimestamp(),
+            });
+            await this.session.sendChat(prompt, agentId);
+            this.view?.webview.postMessage({ type: 'planCreated' });
+          } catch (err) {
+            this.view?.webview.postMessage({
+              type: 'planError',
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+          break;
+        }
         case 'sendCurrentFile':
           await this.session.sendCurrentFile();
           break;
@@ -115,7 +159,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   private postSnapshot(): void {
     if (!this.view) return;
-    this.view.webview.postMessage({ type: 'snapshot', data: this.session.getSnapshot() });
+    this.view.webview.postMessage({
+      type: 'snapshot',
+      data: {
+        ...this.session.getSnapshot(),
+        workspaceRoot: this.fileService.getWorkspaceRoot(),
+      },
+    });
   }
 
   private getHtml(webview: vscode.Webview): string {
@@ -146,6 +196,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         <button data-cmd="sendCurrentFile">当前文件</button>
         <button data-cmd="sendSelection">选区</button>
         <button data-cmd="newChatSession" title="开启新会话">新会话</button>
+        <button type="button" id="planBtn" disabled>计划</button>
         <div class="debug-tools-wrap">
           <button type="button" id="debugToolsBtn" title="调试工具">调试工具</button>
           <div id="debugMenu" class="debug-menu hidden" role="menu">
@@ -175,6 +226,21 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div class="debug-dialog-footer">
         <button type="button" id="debugDialogClose">Close</button>
         <button type="button" id="debugDialogPrimary" class="primary">Send</button>
+      </div>
+    </div>
+  </div>
+  <div id="planOverlay" class="plan-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="planDialogTitle">
+    <div class="plan-dialog">
+      <div class="plan-dialog-header">
+        <h2 id="planDialogTitle">创建计划</h2>
+        <button type="button" id="planDialogCloseX" aria-label="关闭">×</button>
+      </div>
+      <label for="planContent">计划内容</label>
+      <textarea id="planContent" rows="8" placeholder="描述你希望 Agent 制定的计划"></textarea>
+      <div id="planError" class="plan-error" role="alert"></div>
+      <div class="plan-dialog-footer">
+        <button type="button" id="planDialogClose">关闭</button>
+        <button type="button" id="planCreateBtn" class="primary" disabled>创建计划</button>
       </div>
     </div>
   </div>
