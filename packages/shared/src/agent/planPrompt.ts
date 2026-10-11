@@ -1,10 +1,10 @@
 export const PLAN_TEMPLATE_HOME_PATH = '.web-agent-bridge/plans/plan-prompt-template.md';
 
 export function createPlanTimestamp(date = new Date()): string {
-  const pad = (value: number, length = 2) => String(value).padStart(length, '0');
+  const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(
     date.getHours()
-  )}${pad(date.getMinutes())}${pad(date.getSeconds())}${pad(date.getMilliseconds(), 3)}`;
+  )}${pad(date.getMinutes())}`;
 }
 
 export function buildPlanCreationPrompt(input: {
