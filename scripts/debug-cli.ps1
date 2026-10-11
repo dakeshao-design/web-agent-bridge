@@ -8,6 +8,8 @@ param(
 )
 
 $BaseUrl = if ($env:DEBUG_PORT) { "http://127.0.0.1:$($env:DEBUG_PORT)" } else { "http://127.0.0.1:9781" }
+$DebugToken = if ($env:DEBUG_TOKEN) { $env:DEBUG_TOKEN } else { "dev-token" }
+$Headers = @{ "X-Agent-Host-Token" = $DebugToken }
 $StepDelayMs = if ($env:DEBUG_STEP_DELAY_MS) { [int]$env:DEBUG_STEP_DELAY_MS } else { 2000 }
 
 function Wait-DebugStep {
@@ -17,7 +19,7 @@ function Wait-DebugStep {
 }
 
 function Invoke-DebugGet($Path) {
-  $result = Invoke-RestMethod -Uri "$BaseUrl$Path" -Method Get
+  $result = Invoke-RestMethod -Uri "$BaseUrl$Path" -Method Get -Headers $Headers
   Wait-DebugStep
   return $result
 }
@@ -28,6 +30,7 @@ function Invoke-DebugPost($Path, $Body) {
   $response = Invoke-WebRequest `
     -Uri "$BaseUrl$Path" `
     -Method Post `
+    -Headers $Headers `
     -ContentType "application/json; charset=utf-8" `
     -Body $bytes `
     -UseBasicParsing
@@ -36,6 +39,20 @@ function Invoke-DebugPost($Path, $Body) {
     return $response.Content | ConvertFrom-Json
   }
   return $null
+}
+
+function Wait-DebugServer {
+  if (-not $env:DEBUG_PORT -or $env:DEBUG_PORT -eq "9781") { return }
+  $deadline = [DateTime]::UtcNow.AddSeconds(60)
+  do {
+    try {
+      Invoke-WebRequest -Uri "$BaseUrl/debug/help" -Method Get -TimeoutSec 2 -UseBasicParsing | Out-Null
+      return
+    } catch {
+      Start-Sleep -Milliseconds 500
+    }
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Debug server did not restart at $BaseUrl after opening the workspace"
 }
 
 switch ($Command.ToLower()) {
@@ -59,6 +76,7 @@ switch ($Command.ToLower()) {
     } else {
       Invoke-DebugPost "/debug/open-folder" @{} | ConvertTo-Json -Depth 8
     }
+    Wait-DebugServer
   }
   "send-prompt" {
     if (-not $Arg1) { throw "usage: send-prompt <text> [agentId]" }
@@ -92,6 +110,7 @@ switch ($Command.ToLower()) {
     $waitReplyMs = if ($env:DEBUG_FLOW_REPLY_WAIT_MS) { [int]$env:DEBUG_FLOW_REPLY_WAIT_MS } else { 12000 }
 
     Invoke-DebugPost "/debug/open-folder" @{ path = $folder } | Out-Null
+    Wait-DebugServer
     Invoke-DebugPost "/debug/select-agent" @{ agentId = $agentId } | Out-Null
     Start-Sleep -Milliseconds 1000
     Invoke-DebugPost "/debug/click" @{ action = "agent-mode" } | Out-Null

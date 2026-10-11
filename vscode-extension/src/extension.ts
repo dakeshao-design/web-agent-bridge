@@ -9,6 +9,7 @@ import { AgentHostProcess } from './services/AgentHostProcess';
 import { AgentHostBridge } from './services/AgentHostBridge';
 import { VscodeFileService } from './services/VscodeFileService';
 import { AgentSession } from './orchestration/AgentSession';
+import { startExtensionDebugServer } from './services/ExtensionDebugServer';
 
 let session: AgentSession | undefined;
 let hostProcess: AgentHostProcess | undefined;
@@ -78,6 +79,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       hostProcess?.dispose();
     },
   });
+
+  if (context.extensionMode !== vscode.ExtensionMode.Production) {
+    startExtensionDebugServer(context, { session, host: hostProcess });
+  }
 }
 
 export function deactivate(): void {

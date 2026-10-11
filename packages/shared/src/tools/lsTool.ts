@@ -30,7 +30,7 @@ export const lsTool: AgentToolDefinition = {
     },
     {
       name: 'deep',
-      description: '是否递归列出子目录内所有文件，默认 false；false 时含本层文件夹名以 / 结尾',
+      description: '是否递归列出子目录内所有文件，必填 true/false；',
     },
     {
       name: 'filter',
@@ -41,17 +41,18 @@ export const lsTool: AgentToolDefinition = {
   parseArgs(args) {
     const path = args.path?.trim() || '.';
     const filter = args.filter?.trim();
+    const deepRaw = args.deep?.trim();
     return {
       action: 'list',
       path,
-      deep: parseBool(args.deep),
+      ...(deepRaw ? { deep: parseBool(deepRaw) } : {}),
       ...(filter ? { filter } : {}),
     };
   },
   toArgs(operation) {
     const args: Record<string, string> = { path: operation.path || '.' };
-    if (operation.deep) {
-      args.deep = 'true';
+    if (operation.deep !== undefined) {
+      args.deep = operation.deep ? 'true' : 'false';
     }
     if (operation.filter) {
       args.filter = operation.filter;

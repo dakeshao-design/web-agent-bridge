@@ -8,9 +8,11 @@ use tauri::{AppHandle, Listener, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::webview_bridge::{
-    agent_bridge_is_loading, agent_bridge_poll_snapshot, create_agent_webview, debug_eval_composer_ready, fill_agent_message,
-    hide_agent_webview, new_agent_chat_session, send_agent_message, show_agent_webview,
-    WebviewBounds, WebviewState,
+    agent_bridge_is_loading, agent_bridge_poll_snapshot, create_agent_webview,
+    debug_eval_composer_ready, debug_query_agent, debug_query_bridge_response,
+    debug_query_last_file_op, debug_reset_sync, fill_agent_message, hide_agent_webview,
+    new_agent_chat_session, send_agent_message, show_agent_webview, WebviewBounds,
+    WebviewState,
 };
 
 const DEFAULT_PORT: &str = "9791";
@@ -205,6 +207,57 @@ fn handle(
 ) -> Result<Response<std::io::Cursor<Vec<u8>>>, String> {
     match (method, path) {
         (Method::Get, "/health") => json_ok(json!({ "ok": true, "mode": "agent-host" })),
+        (Method::Get, "/debug/status") => {
+            let state = app.state::<WebviewState>();
+            let webviews = state
+                .webviews
+                .lock()
+                .map_err(|e| e.to_string())?
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let active_syncs = state
+                .active_syncs
+                .lock()
+                .map_err(|e| e.to_string())?
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            json_ok(json!({ "ok": true, "webviews": webviews, "activeSyncs": active_syncs }))
+        }
+        (Method::Get, "/debug/agent-dom") => {
+            let agent_id = debug_agent_id(url)?;
+            json_ok(debug_query_agent(app, &agent_id)?)
+        }
+        (Method::Get, "/debug/conversation") => {
+            let agent_id = debug_agent_id(url)?;
+            let data = debug_query_agent(app, &agent_id)?;
+            json_ok(json!({
+                "agentId": agent_id,
+                "conversation": data.get("conversation").cloned().unwrap_or(json!([])),
+                "bridgeReady": data.get("bridgeReady"),
+                "virtualItemCount": data.get("virtualItemCount"),
+            }))
+        }
+        (Method::Get, "/debug/bridge-response") => {
+            let agent_id = debug_agent_id(url)?;
+            json_ok(debug_query_bridge_response(app, &agent_id)?)
+        }
+        (Method::Get, "/debug/composer-ready") => {
+            let agent_id = debug_agent_id(url)?;
+            let label = format!("agent-{}", agent_id);
+            let ready = debug_eval_composer_ready(app, &label);
+            json_ok(json!({ "ok": true, "agentId": agent_id, "ready": ready }))
+        }
+        (Method::Get, "/debug/last-file-op") => json_ok(debug_query_last_file_op(app)?),
+        (Method::Post, "/debug/reset-sync") => {
+            let payload: AgentBody = parse_json(body)?;
+            if payload.agent_id.is_empty() {
+                return Err("agentId is required".into());
+            }
+            debug_reset_sync(app, &payload.agent_id)?;
+            json_ok(json!({ "ok": true, "agentId": payload.agent_id, "reset": true }))
+        }
         (Method::Get, "/events") => {
             let after = parse_query(url.split('?').nth(1).unwrap_or(""))
                 .get("after")
@@ -411,6 +464,16 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
         }
     }
     map
+}
+
+fn debug_agent_id(url: &str) -> Result<String, String> {
+    let query = parse_query(url.split('?').nth(1).unwrap_or(""));
+    query
+        .get("agentId")
+        .or_else(|| query.get("agent_id"))
+        .filter(|agent_id| !agent_id.is_empty())
+        .cloned()
+        .ok_or_else(|| "agentId is required".into())
 }
 
 fn read_body(request: &mut tiny_http::Request) -> String {

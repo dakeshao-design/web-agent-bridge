@@ -5,6 +5,7 @@ import {
   formatCallToolDisplayHint,
   splitCallToolDisplayParts,
 } from '../dist/agent/callToolDisplay.js';
+import { parseCallToolBlocks } from '../dist/tools/parseCallTool.js';
 
 assert.equal(
   formatCallToolDisplayLine('ls', ['.'], '成功'),
@@ -74,6 +75,20 @@ if (parts3[0].kind === 'tool') {
   assert.equal(parts3[0].status, '进行中');
   assert.ok(!parts3[0].raw.includes('END_TOOL'));
 }
+
+const implicitArgBoundary = [
+  'BEGIN_TOOL: write_file',
+  'BEGIN_ARG: path',
+  'README.md',
+  'BEGIN_ARG: content',
+  '# demo',
+  'END_ARG',
+  'END_TOOL',
+].join('\n');
+const parsedOps = parseCallToolBlocks(implicitArgBoundary);
+assert.equal(parsedOps.length, 1);
+assert.equal(parsedOps[0].path, 'README.md');
+assert.equal(parsedOps[0].content, '# demo');
 
 const withChrome = [
   'call-tool',

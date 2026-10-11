@@ -126,8 +126,12 @@ export const applyCopyPath: FileToolHandler = async (op, ctx) => {
 };
 
 export const applyListFiles: FileToolHandler = async (op, ctx) => {
-  const deep = op.deep ?? false;
-  const listed = await ctx.fileService.listFiles(op.path, deep);
+  if (op.deep === undefined) {
+    const message = '缺少 deep 参数，须为 true 或 false';
+    ctx.addLogEntry(op, 'error', message);
+    return { ok: false, message };
+  }
+  const listed = await ctx.fileService.listFiles(op.path, op.deep);
   const files = filterListedNames(listed, op.filter);
   const content = files.join('\n');
   const message = `共 ${files.length} 项`;

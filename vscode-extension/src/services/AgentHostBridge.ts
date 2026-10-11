@@ -18,6 +18,40 @@ type BridgeCommHandler = (
 type NewChatOnloadHandler = (agentId: string) => void | Promise<void>;
 type AgentClosedHandler = (agentId: string) => void | Promise<void>;
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function consumeEventBatch(
+  events: Array<Record<string, unknown>>,
+  cursor: number,
+  dispatch: (event: Record<string, unknown>) => Promise<void>,
+  onFailure: (event: Record<string, unknown>, error: unknown) => void
+): Promise<{
+  cursor: number;
+  processed: number;
+  failedEvent?: Record<string, unknown>;
+}> {
+  let nextCursor = cursor;
+  let processed = 0;
+  for (const event of events) {
+    const seq = Number(event.seq);
+    if (!Number.isSafeInteger(seq) || seq <= nextCursor) {
+      onFailure(event, new Error(`Invalid event seq: ${String(event.seq)}`));
+      return { cursor: nextCursor, processed, failedEvent: event };
+    }
+    try {
+      await dispatch(event);
+    } catch (error) {
+      onFailure(event, error);
+      return { cursor: nextCursor, processed, failedEvent: event };
+    }
+    nextCursor = seq;
+    processed++;
+  }
+  return { cursor: nextCursor, processed };
+}
+
 export class AgentHostBridge implements IAgentBridge {
   private statuses = new Map<string, AgentStatus>();
   private responseHandler?: ResponseHandler;
@@ -51,15 +85,41 @@ export class AgentHostBridge implements IAgentBridge {
           await new Promise((r) => setTimeout(r, 1000));
           continue;
         }
-        const { seq, events } = await this.host.pollEvents(this.eventCursor);
-        this.eventCursor = seq;
-        for (const ev of events) {
-          await this.dispatch(ev);
+        const after = this.eventCursor;
+        const { seq, events } = await this.host.pollEvents(after);
+        console.debug(
+          `[wab-events] poll after=${after} through=${seq} count=${events.length}`
+        );
+        const result = await consumeEventBatch(
+          events,
+          this.eventCursor,
+          async (event) => {
+            const context = this.eventContext(event);
+            console.debug(`[wab-events] event start ${context}`);
+            await this.dispatch(event);
+            console.debug(`[wab-events] event complete ${context}`);
+          },
+          (event, error) => {
+            console.error(
+              `[wab-events] event failed ${this.eventContext(event)}; retaining cursor for retry: ${errorMessage(error)}`
+            );
+          }
+        );
+        this.eventCursor = result.cursor;
+        if (result.failedEvent) {
+          await new Promise((r) => setTimeout(r, 1000));
         }
-      } catch {
+      } catch (error) {
+        console.error(
+          `[wab-events] poll failed after=${this.eventCursor}: ${errorMessage(error)}`
+        );
         await new Promise((r) => setTimeout(r, 1000));
       }
     }
+  }
+
+  private eventContext(ev: Record<string, unknown>): string {
+    return `seq=${String(ev.seq ?? '?')} type=${String(ev.type || '')} agent=${String(ev.agentId || 'unknown')} key=${normalizeChatKey(ev.key)}`;
   }
 
   private async dispatch(ev: Record<string, unknown>): Promise<void> {
@@ -69,10 +129,34 @@ export class AgentHostBridge implements IAgentBridge {
       const role = (ev.role === 'user' ? 'user' : 'agent') as 'user' | 'agent';
       const key = normalizeChatKey(ev.key);
       const text = String(ev.text || '');
-      if (this.chatHandler) await this.chatHandler(agentId, role, key, text);
+      const isToolResponse = role === 'agent' && text !== '' && key === '';
+      if (this.chatHandler) {
+        console.debug(`[wab-events] callback start chatHandler ${this.eventContext(ev)}`);
+        try {
+          await this.chatHandler(agentId, role, key, text);
+          console.debug(`[wab-events] callback complete chatHandler ${this.eventContext(ev)}`);
+        } catch (error) {
+          console.error(
+            `[wab-events] callback failed chatHandler ${this.eventContext(ev)}: ${errorMessage(error)}`
+          );
+          if (!isToolResponse) throw error;
+        }
+      }
       // 仅空 key 的 Host 工具响应路径触发工具；普通会话 key 只更新对话
-      if (role === 'agent' && text && key === '' && this.responseHandler) {
-        await this.responseHandler(agentId, text, key);
+      if (isToolResponse) {
+        if (!this.responseHandler) {
+          throw new Error(`Response handler is not registered for agent ${agentId}`);
+        }
+        console.debug(`[wab-events] callback start responseHandler ${this.eventContext(ev)}`);
+        try {
+          await this.responseHandler(agentId, text, key);
+          console.debug(`[wab-events] callback complete responseHandler ${this.eventContext(ev)}`);
+        } catch (error) {
+          console.error(
+            `[wab-events] callback failed responseHandler ${this.eventContext(ev)}: ${errorMessage(error)}`
+          );
+          throw error;
+        }
       }
       return;
     }

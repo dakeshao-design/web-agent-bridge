@@ -8,3 +8,4 @@ Thumbs.db
 .vscode/
 /private/
 /vscode-extension/templates/
+scripts/*-bridge.js

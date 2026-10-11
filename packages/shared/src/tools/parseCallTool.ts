@@ -167,7 +167,8 @@ function isFileContentArg(tool: AgentToolDefinition | undefined, argName: string
 function parseToolArgs(block: string, toolName: string): Record<string, string> {
   const tool = getToolByName(toolName);
   const args: Record<string, string> = {};
-  const argPattern = /BEGIN_ARG:\s*(\S+)\s*\n([\s\S]*?)\nEND_ARG/gi;
+  const argPattern =
+    /BEGIN_ARG:\s*(\S+)\s*\r?\n([\s\S]*?)(?=\r?\n(?:END_ARG\b|BEGIN_ARG:\s*\S+\s*\r?\n|END_TOOL\b)|$)/gi;
   let match: RegExpExecArray | null;
   while ((match = argPattern.exec(block)) !== null) {
     const argName = match[1];

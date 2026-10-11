@@ -97,6 +97,11 @@
           "default": 9791,
           "description": "Agent Host HTTP 端口"
         },
+        "webAgentBridge.debugPort": {
+          "type": "number",
+          "default": 9782,
+          "description": "扩展开发模式命令行调试 HTTP 端口"
+        },
         "webAgentBridge.hostToken": {
           "type": "string",
           "default": "dev-token",
@@ -113,6 +118,7 @@
   "scripts": {
     "compile": "node ./esbuild.mjs",
     "watch": "node ./esbuild.mjs --watch",
+    "test:event-dispatch": "node ./scripts/test-event-dispatch.mjs",
     "build": "node ./scripts/copy-templates.mjs && node ./esbuild.mjs",
     "vscode:prepublish": "pnpm run build",
     "copy-templates": "node ./scripts/copy-templates.mjs",

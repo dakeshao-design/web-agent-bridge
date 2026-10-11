@@ -74,7 +74,7 @@ export function buildAgentModePrompt(
   const waitLine = options?.omitWaitForUser ? '' : '\n本轮不要回复，等待用户输入。';
 
   return `${SYSTEM_MARKER}
-你处于 **Agent 模式** 下，当前工作区只有使用 \`call-tool\` 代码块调用工具才能访问。
+你在 **Agent Mode** ，当前工作区 ${workspaceRoot ? '`' + workspaceRoot + '`' : ''} 只有使用 \`call-tool\` 代码块调用工具才能访问。
 
 如果需要调用工具，严格遵守如下格式回复：
 

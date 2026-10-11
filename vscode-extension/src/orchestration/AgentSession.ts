@@ -342,6 +342,10 @@ export class AgentSession {
     };
   }
 
+  getLastFileOp() {
+    return this.logs.at(-1) ?? null;
+  }
+
   private resolveCallToolDisplayStatus(
     agentId: string,
     toolName: string,
@@ -1492,7 +1496,6 @@ export class AgentSession {
         this.setStatus(agentId, 'waiting');
         return;
       }
-      this.processedToolResponses.add(responseKey);
     }
 
     if (!force) {
@@ -1519,6 +1522,7 @@ export class AgentSession {
         await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
       }
       this.setStatus(agentId, 'waiting');
+      if (!force) this.processedToolResponses.add(`${agentId}\n${text}`);
       return;
     }
 
@@ -1600,6 +1604,7 @@ export class AgentSession {
       }
     }
     this.setStatus(agentId, 'waiting');
+    if (!force) this.processedToolResponses.add(`${agentId}\n${text}`);
   }
 
   private addLog(op: FileOperation, status: LogStatus, message?: string): void {
