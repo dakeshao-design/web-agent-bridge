@@ -1009,7 +1009,17 @@ fn messages_from_snapshot(snap: &PollSnapshot) -> Vec<ChatMessage> {
             text: agent.text.clone(),
         });
     }
+    // 同时新增时按 index 顺序发出
+    messages.sort_by(|a, b| a.key.cmp(&b.key));
     messages
+}
+
+fn mark_message_emitted(sync_state: &mut AgentSyncState, message: &ChatMessage) {
+    sync_state.emitted_keys.insert(message.key.clone());
+    sync_state
+        .emitted_texts
+        .insert(message.key.clone(), message.text.clone());
+    sync_state.stable_tracker.remove(&message.key);
 }
 
 fn emit_snapshot_conversation(
@@ -1044,74 +1054,118 @@ fn emit_snapshot_conversation(
             return;
         }
 
-        for message in messages {
-            if should_skip_sync_message(sync_state, &message) {
-                continue;
+        // lastUser 与 lastAgent 均为未发出的新增时，等齐后按 index 一并发出
+        let both_new = match (&snap.last_user, &snap.last_agent) {
+            (Some(u), Some(a)) => {
+                !sync_state.emitted_keys.contains(&u.index)
+                    && !sync_state.emitted_keys.contains(&a.index)
             }
+            _ => false,
+        };
 
-            // 生成中：agent 文本变化即推送，便于侧栏实时刷新
-            if snap.loading && message.role == "agent" {
-                sync_state.emitted_keys.insert(message.key.clone());
-                sync_state
-                    .emitted_texts
-                    .insert(message.key.clone(), message.text.clone());
-                sync_state.stable_tracker.remove(&message.key);
-                ready_messages.push(message);
-                continue;
-            }
-
-            let required_stable = if message.role == "agent" {
-                agent_emit_stable_ms(&message.text, stable_ms)
-            } else {
-                stable_ms
-            };
-
+        if both_new {
             let now = Instant::now();
-            match sync_state.stable_tracker.get(&message.key) {
-                Some((last_text, since)) if last_text == &message.text => {
-                    if now.duration_since(*since) >= Duration::from_millis(required_stable) {
-                        sync_state.emitted_keys.insert(message.key.clone());
+            let mut pending: Vec<ChatMessage> = Vec::new();
+            let mut all_ready = true;
+            for message in messages {
+                if should_skip_sync_message(sync_state, &message) {
+                    continue;
+                }
+                if snap.loading {
+                    pending.push(message);
+                    continue;
+                }
+                let required_stable = if message.role == "agent" {
+                    agent_emit_stable_ms(&message.text, stable_ms)
+                } else {
+                    stable_ms
+                };
+                match sync_state.stable_tracker.get(&message.key) {
+                    Some((last_text, since)) if last_text == &message.text => {
+                        if now.duration_since(*since) >= Duration::from_millis(required_stable) {
+                            pending.push(message);
+                        } else {
+                            all_ready = false;
+                        }
+                    }
+                    _ => {
                         sync_state
-                            .emitted_texts
-                            .insert(message.key.clone(), message.text.clone());
-                        sync_state.stable_tracker.remove(&message.key);
-                        ready_messages.push(message);
+                            .stable_tracker
+                            .insert(message.key.clone(), (message.text.clone(), now));
+                        all_ready = false;
                     }
                 }
-                _ => {
-                    if message.role == "agent" {
-                        if let Some((prev_text, _)) = sync_state.stable_tracker.get(&message.key) {
-                            if prev_text.contains("BEGIN_TOOL")
-                                && !message.text.contains("BEGIN_TOOL")
+            }
+            if all_ready {
+                for message in pending {
+                    mark_message_emitted(sync_state, &message);
+                    ready_messages.push(message);
+                }
+            }
+        } else {
+            for message in messages {
+                if should_skip_sync_message(sync_state, &message) {
+                    continue;
+                }
+
+                // 生成中：agent 文本变化即推送，便于侧栏实时刷新
+                if snap.loading && message.role == "agent" {
+                    mark_message_emitted(sync_state, &message);
+                    ready_messages.push(message);
+                    continue;
+                }
+
+                let required_stable = if message.role == "agent" {
+                    agent_emit_stable_ms(&message.text, stable_ms)
+                } else {
+                    stable_ms
+                };
+
+                let now = Instant::now();
+                match sync_state.stable_tracker.get(&message.key) {
+                    Some((last_text, since)) if last_text == &message.text => {
+                        if now.duration_since(*since) >= Duration::from_millis(required_stable) {
+                            mark_message_emitted(sync_state, &message);
+                            ready_messages.push(message);
+                        }
+                    }
+                    _ => {
+                        if message.role == "agent" {
+                            if let Some((prev_text, _)) = sync_state.stable_tracker.get(&message.key)
                             {
-                                let already_emitted_tool = sync_state
-                                    .emitted_texts
-                                    .get(&message.key)
-                                    .map(|t| t.contains("BEGIN_TOOL"))
-                                    .unwrap_or(false);
-                                if !already_emitted_tool {
-                                    let prev_text = prev_text.clone();
-                                    sync_state.emitted_keys.insert(message.key.clone());
-                                    sync_state
+                                if prev_text.contains("BEGIN_TOOL")
+                                    && !message.text.contains("BEGIN_TOOL")
+                                {
+                                    let already_emitted_tool = sync_state
                                         .emitted_texts
-                                        .insert(message.key.clone(), prev_text.clone());
-                                    ready_messages.push(ChatMessage {
-                                        key: message.key.clone(),
-                                        role: message.role.clone(),
-                                        text: prev_text,
-                                    });
+                                        .get(&message.key)
+                                        .map(|t| t.contains("BEGIN_TOOL"))
+                                        .unwrap_or(false);
+                                    if !already_emitted_tool {
+                                        let prev_text = prev_text.clone();
+                                        sync_state.emitted_keys.insert(message.key.clone());
+                                        sync_state
+                                            .emitted_texts
+                                            .insert(message.key.clone(), prev_text.clone());
+                                        ready_messages.push(ChatMessage {
+                                            key: message.key.clone(),
+                                            role: message.role.clone(),
+                                            text: prev_text,
+                                        });
+                                    }
                                 }
                             }
                         }
+                        sync_state
+                            .stable_tracker
+                            .insert(message.key.clone(), (message.text.clone(), now));
                     }
-                    sync_state
-                        .stable_tracker
-                        .insert(message.key.clone(), (message.text.clone(), now));
                 }
             }
         }
     }
 
+    ready_messages.sort_by(|a, b| a.key.cmp(&b.key));
     for message in ready_messages {
         emit_chat_message(app, agent_id, &message);
     }

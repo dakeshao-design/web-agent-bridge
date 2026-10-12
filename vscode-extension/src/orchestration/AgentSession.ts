@@ -1117,7 +1117,7 @@ export class AgentSession {
         this.loggedChatKeys.add(dedupeKey);
         this.loggedAgentTexts.set(dedupeKey, text);
       }
-      this.chats.push({ agentId, role, key, text });
+      this.pushSyncedChat(agentId, role, key, text);
       if (text.includes('BEGIN_TOOL')) {
         this.setTextDisplayStatus(agentId, text, '进行中');
       }
@@ -1155,8 +1155,32 @@ export class AgentSession {
     }
 
     if (key !== '') this.loggedChatKeys.add(dedupeKey);
-    this.chats.push({ agentId, role, key, text });
+    this.pushSyncedChat(agentId, role, key, text);
     return true;
+  }
+
+  /** 同步入队；末尾同 agent 且 key 更大的消息之前插入，保证按 index 显示 */
+  private pushSyncedChat(
+    agentId: string,
+    role: 'user' | 'agent',
+    key: string,
+    text: string
+  ): void {
+    if (key === '') {
+      this.chats.push({ agentId, role, key, text });
+      return;
+    }
+    let insertAt = this.chats.length;
+    for (let i = this.chats.length - 1; i >= 0; i--) {
+      const c = this.chats[i];
+      if (c.agentId !== agentId) continue;
+      if (c.key != null && c.key !== '' && c.key > key) {
+        insertAt = i;
+        continue;
+      }
+      break;
+    }
+    this.chats.splice(insertAt, 0, { agentId, role, key, text });
   }
 
   private findChatIndex(

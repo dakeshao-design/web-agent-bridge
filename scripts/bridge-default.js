@@ -626,6 +626,10 @@
           text: s.lastAgent.text,
         });
       }
+      // 同时新增时按 index 顺序
+      list.sort(function (a, b) {
+        return String(a.key).localeCompare(String(b.key));
+      });
       return list;
     }
 
