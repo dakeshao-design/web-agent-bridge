@@ -1477,7 +1477,7 @@ export class AgentSession {
           },
           onConfirm: async () => {
             const limit = this.agents.find((a) => a.id === agentId)?.writeFileLineLimit;
-            const hint = buildIncompleteCallToolHint(limit);
+            const hint = buildIncompleteCallToolHint(limit, text);
             this.setTextDisplayStatus(
               agentId,
               text,

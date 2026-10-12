@@ -566,7 +566,7 @@ export default function App() {
             },
             onConfirm: async () => {
               const limit = agentsRef.current.find((a) => a.id === agentId)?.writeFileLineLimit;
-              const hint = buildIncompleteCallToolHint(limit);
+              const hint = buildIncompleteCallToolHint(limit, text);
               await logUserMessage(agentId, hint, '工具结果');
               await sendToolResultToAgent(agentId, hint);
               setAgentStatus(agentId, 'waiting');

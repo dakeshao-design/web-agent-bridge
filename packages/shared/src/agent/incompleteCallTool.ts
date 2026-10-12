@@ -1,4 +1,5 @@
 import { parseCallToolBlocks } from '../tools/parseCallTool.js';
+import { countContentLines } from './fileLineLimit.js';
 import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
 /** 发现不完整后等待对话无变化再提示 */
@@ -41,15 +42,25 @@ export function isIncompleteFromLastConversation(
 }
 
 /** 截断未落盘时回传给 Agent 的提示 */
-export function buildIncompleteCallToolHint(writeFileLineLimit?: number): string {
+export function buildIncompleteCallToolHint(
+  writeFileLineLimit?: number,
+  incompleteContent?: string
+): string {
   const lines: string[] = [
     SYSTEM_MARKER,
     'err `incomplete_call_tool`',
     'message: 工具调用不完整（缺少 END_TOOL 或 call-tool 未闭合），未执行、未落盘。',
   ];
   if (writeFileLineLimit != null && writeFileLineLimit > 0) {
+    const undroppedLines =
+      incompleteContent != null ? countContentLines(incompleteContent) : 0;
+    // 未落盘已不超过上限时，用一半行数再压小分片
+    const segmentLimit =
+      undroppedLines > 0 && undroppedLines <= writeFileLineLimit
+        ? Math.max(1, Math.floor(undroppedLines / 2))
+        : writeFileLineLimit;
     lines.push(
-      `hint: 请按行分片重试：每段不超过 ${writeFileLineLimit} 行，只在换行处断开；先 write_file 写第 1 段，再多次 append_file。不要从中间 append。`
+      `hint: 请按行分片重试：每段不超过 ${segmentLimit} 行，只在换行处断开；先 write_file 写第 1 段，再多次 append_file。不要从中间 append。`
     );
   } else {
     lines.push('hint: 请重新输出完整的 call-tool 块（含 END_TOOL）。大文件请分多轮写入。');
