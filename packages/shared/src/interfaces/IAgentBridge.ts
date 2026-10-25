@@ -31,6 +31,13 @@ export function pollSnapshotFingerprint(snap: BridgePollSnapshot): string {
 
 export interface IAgentBridge {
   sendMessage(agentId: string, text: string): Promise<void>;
-  onResponse(callback: (agentId: string, text: string, key?: string) => void): void;
+  onResponse(
+    callback: (
+      agentId: string,
+      text: string,
+      key?: string,
+      messageIndex?: string
+    ) => void
+  ): void;
   getStatus(agentId: string): AgentStatus;
 }

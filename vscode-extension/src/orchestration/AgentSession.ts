@@ -24,6 +24,9 @@ import {
   IncompleteCallToolConfirm,
   isToolCallAlreadyReported,
   isToolResultEcho,
+  compareMessageIndex,
+  toolExecDedupeKey,
+  shouldForceStaleCallTool,
   keyArgsFromToolArgs,
   mergeToolPermissions,
   buildSelectionMessage,
@@ -125,7 +128,19 @@ export class AgentSession {
   /** 对话同步去重：agentId:role:key */
   private loggedChatKeys = new Set<string>();
   private loggedAgentTexts = new Map<string, string>();
-  private processedToolResponses = new Set<string>();
+  /** agentId + messageIndex + 块指纹 */
+  private processedToolOps = new Set<string>();
+  /** 各 agent 上次进入执行路径的 messageIndex */
+  private lastToolMessageIndex = new Map<string, string>();
+  /** 已对某 messageIndex 做过静默强制执行 */
+  private staleForceAttempted = new Set<string>();
+  /** 工具通道已定稿的 agent 回复（不再接受更短的 loading 残缺覆盖） */
+  private settledAgentReplies = new Set<string>();
+  /** 回传工具结果时用于定稿面板的完整 agent 正文 */
+  private pendingToolSource = new Map<
+    string,
+    { text: string; messageIndex: string }
+  >();
   /** 自动打开的登录窗，就绪后才 hide */
   private autoOpenedLogin = new Set<string>();
   /** 登录探测世代号，递增即取消 */
@@ -292,6 +307,7 @@ export class AgentSession {
         this.notify();
       }
       this.lastPollSnapshots.set(agentId, snap);
+
       const fingerprint = pollSnapshotFingerprint(snap);
       let watch = this.waitingWatch.get(agentId);
       if (!watch) {
@@ -308,9 +324,62 @@ export class AgentSession {
       if (snap.loading || Date.now() - watch.changeSince < 3000) {
         this.setStatus(agentId, 'waiting');
       } else if (status === 'waiting') {
-        this.setStatus(agentId, 'idle');
+        // waiting 结束：兜底强制未执行的 call-tool
+        await this.maybeForceStaleCallTool(agentId, snap);
+        const busyAfterForce =
+          [...this.inflightToolOps].some((k) => k.startsWith(`${agentId}:`)) ||
+          this.pendingDecisions.has(agentId);
+        if (!busyAfterForce) {
+          this.setStatus(agentId, 'idle');
+        }
       }
     }
+  }
+
+  /** waiting 结束时 DOM 仍有未执行 call-tool 则强制跑一次 */
+  private async maybeForceStaleCallTool(
+    agentId: string,
+    snap: BridgePollSnapshot
+  ): Promise<void> {
+    if ([...this.inflightToolOps].some((k) => k.startsWith(`${agentId}:`))) return;
+    if (this.pendingDecisions.has(agentId)) return;
+
+    const messageIndex = snap.lastAgent?.index?.trim() ?? '';
+    const attemptKey = `${agentId}\n${messageIndex}`;
+    const alreadyProcessed =
+      messageIndex !== '' &&
+      [...this.processedToolOps].some((k) => k.startsWith(`${agentId}\n${messageIndex}\n`));
+
+    if (
+      !shouldForceStaleCallTool({
+        loading: snap.loading,
+        lastAgentIndex: snap.lastAgent?.index,
+        lastUserIndex: snap.lastUser?.index,
+        agentText: snap.lastAgent?.text,
+        alreadyAttempted: alreadyProcessed || this.staleForceAttempted.has(attemptKey),
+      })
+    ) {
+      return;
+    }
+
+    const text = snap.lastAgent?.text?.trim() ?? '';
+    if (!text) return;
+
+    this.staleForceAttempted.add(attemptKey);
+    const ops = this.callToolParser.parse(text);
+    const opsFp = fileOperationsFingerprint(ops);
+    this.processedToolOps.add(toolExecDedupeKey(agentId, messageIndex, opsFp));
+    const prev = this.lastToolMessageIndex.get(agentId) ?? '';
+    if (messageIndex && compareMessageIndex(messageIndex, prev) > 0) {
+      this.lastToolMessageIndex.set(agentId, messageIndex);
+    }
+    console.debug(
+      `[wab] stale call-tool force agent=${agentId} index=${messageIndex} len=${text.length}`
+    );
+    await this.handleAgentResponse(agentId, text, '', {
+      force: true,
+      messageIndex,
+    });
   }
 
   getSnapshot() {
@@ -499,15 +568,19 @@ export class AgentSession {
   }
 
   async init(): Promise<void> {
-    this.bridge.onResponse((agentId, text, key) =>
-      this.handleAgentResponse(agentId, text, key)
+    this.bridge.onResponse((agentId, text, key, messageIndex) =>
+      this.handleAgentResponse(agentId, text, key, { messageIndex })
     );
-    this.bridge.onChatMessage(async (agentId, role, key, text) => {
+    this.bridge.onChatMessage(async (agentId, role, key, text, meta) => {
       if (role === 'user' && !isToolResultEcho(text)) {
-        this.clearProcessedToolResponses(agentId);
+        this.clearProcessedToolOps(agentId);
       }
       this.incompleteConfirm.onContentChange(agentId, text);
-      if (!this.acceptSyncedChat(agentId, role, key, text)) {
+      // 空 key 仅工具通道，不入聊天气泡
+      if (role === 'agent' && key === '') {
+        return;
+      }
+      if (!this.acceptSyncedChat(agentId, role, key, text, { loading: meta?.loading })) {
         return;
       }
       await this.saveChatLog(agentId, role, text);
@@ -670,7 +743,7 @@ export class AgentSession {
       wireText = await this.buildDeferredAgentModeWireText(agentId, text);
       this.agentModeEnabled = true;
     }
-    this.clearProcessedToolResponses(agentId);
+    this.clearProcessedToolOps(agentId);
     this.chats.push({ agentId, role: 'user', text });
     await this.saveChatLog(agentId, 'user', text);
     this.setStatus(agentId, 'sending');
@@ -700,7 +773,15 @@ export class AgentSession {
     };
     dropPrefixed(this.loggedChatKeys);
     dropPrefixed(this.loggedAgentTexts);
-    this.clearProcessedToolResponses(agentId);
+    this.clearProcessedToolOps(agentId);
+    this.lastToolMessageIndex.delete(agentId);
+    this.pendingToolSource.delete(agentId);
+    for (const key of [...this.staleForceAttempted]) {
+      if (key.startsWith(`${agentId}\n`)) this.staleForceAttempted.delete(key);
+    }
+    for (const key of [...this.settledAgentReplies]) {
+      if (key.startsWith(`${agentId}\n`)) this.settledAgentReplies.delete(key);
+    }
     dropPrefixed(this.incompleteHints);
     dropPrefixed(this.unknownToolHints);
     dropPrefixed(this.inflightToolOps);
@@ -1021,12 +1102,34 @@ export class AgentSession {
     agentId: string,
     role: 'user' | 'agent',
     key: string,
-    text: string
+    text: string,
+    opts?: { loading?: boolean }
   ): boolean {
     if (role === 'agent') {
+      // 空 key 由调用方过滤；此处兜底
+      if (key === '') return false;
+
+      // 工具已定稿：拒绝更短的 loading 残缺覆盖
+      if (key !== '' && this.settledAgentReplies.has(`${agentId}\n${key}`)) {
+        const settledIdx = this.findChatIndex(agentId, 'agent', key);
+        if (settledIdx >= 0 && text.length < this.chats[settledIdx].text.length) {
+          return false;
+        }
+      }
+
+      // 仅信任事件 loading；同轮生长才 upsert，避免新 agent 早于 user 入队时覆盖上一轮
+      if (opts?.loading === true) {
+        if (key !== '' && this.settledAgentReplies.has(`${agentId}\n${key}`)) {
+          // 已视作 loading 结束，走下方常规合并
+        } else {
+          const upserted = this.tryUpsertGrowingAgent(agentId, key, text);
+          if (upserted !== null) return upserted;
+        }
+      }
+
       const dedupeKey = `${agentId}:agent:${key}`;
       const prevText = this.loggedAgentTexts.get(dedupeKey);
-      if (key !== '' && this.loggedChatKeys.has(dedupeKey)) {
+      if (this.loggedChatKeys.has(dedupeKey)) {
         if (!prevText || prevText === text) {
           return false;
         }
@@ -1059,33 +1162,6 @@ export class AgentSession {
       }
       if (latestAgentIndex >= 0) {
         const previous = this.chats[latestAgentIndex];
-        if (key === '') {
-          const previousToolBlocks = splitCallToolDisplayParts(previous.text)
-            .filter((part) => part.kind === 'tool')
-            .map((part) =>
-              part.raw.match(/BEGIN_TOOL\s*:[\s\S]*?(?:\bEND_TOOL\b|$)/i)?.[0].trim() ??
-              part.raw.trim()
-            );
-          const currentParts = splitCallToolDisplayParts(text);
-          const currentToolBlocks = currentParts
-            .filter((part) => part.kind === 'tool')
-            .map((part) =>
-              part.raw.match(/BEGIN_TOOL\s*:[\s\S]*?(?:\bEND_TOOL\b|$)/i)?.[0].trim() ??
-              part.raw.trim()
-            );
-          const containsOnlyToolBlocks =
-            currentToolBlocks.length > 0 &&
-            currentParts.every(
-              (part) => part.kind === 'tool' || !part.text.trim()
-            );
-          if (
-            containsOnlyToolBlocks &&
-            currentToolBlocks.every((block) => previousToolBlocks.includes(block))
-          ) {
-            return false;
-          }
-        }
-
         const isSameReply =
           previous.text === text ||
           (text.length > previous.text.length && text.startsWith(previous.text)) ||
@@ -1094,7 +1170,7 @@ export class AgentSession {
           const previousKey = previous.key;
           const isGrowth = text.length > previous.text.length;
           if (isGrowth) previous.text = text;
-          if (key !== '' && previousKey !== key) {
+          if (previousKey !== key) {
             if (previousKey) {
               const previousDedupeKey = `${agentId}:agent:${previousKey}`;
               this.loggedChatKeys.delete(previousDedupeKey);
@@ -1102,10 +1178,8 @@ export class AgentSession {
             }
             previous.key = key;
           }
-          if (key !== '') {
-            this.loggedChatKeys.add(dedupeKey);
-            this.loggedAgentTexts.set(dedupeKey, previous.text);
-          }
+          this.loggedChatKeys.add(dedupeKey);
+          this.loggedAgentTexts.set(dedupeKey, previous.text);
           if (isGrowth && text.includes('BEGIN_TOOL')) {
             this.setTextDisplayStatus(agentId, text, '进行中');
           }
@@ -1113,10 +1187,8 @@ export class AgentSession {
         }
       }
 
-      if (key !== '') {
-        this.loggedChatKeys.add(dedupeKey);
-        this.loggedAgentTexts.set(dedupeKey, text);
-      }
+      this.loggedChatKeys.add(dedupeKey);
+      this.loggedAgentTexts.set(dedupeKey, text);
       this.pushSyncedChat(agentId, role, key, text);
       if (text.includes('BEGIN_TOOL')) {
         this.setTextDisplayStatus(agentId, text, '进行中');
@@ -1198,11 +1270,74 @@ export class AgentSession {
     return -1;
   }
 
-  private clearProcessedToolResponses(agentId: string): void {
+  private clearProcessedToolOps(agentId: string): void {
     const prefix = `${agentId}\n`;
-    for (const key of this.processedToolResponses) {
-      if (key.startsWith(prefix)) this.processedToolResponses.delete(key);
+    for (const key of this.processedToolOps) {
+      if (key.startsWith(prefix)) this.processedToolOps.delete(key);
     }
+  }
+
+  /**
+   * loading 中安全 upsert：可新建本轮首条，或同 key / 前缀生长时更新。
+   * 返回 null 表示与上一条不是同一回复，勿覆盖，交回常规合并。
+   */
+  private tryUpsertGrowingAgent(
+    agentId: string,
+    key: string,
+    text: string
+  ): boolean | null {
+    const lastUserIndex = this.chats.reduce(
+      (index, chat, chatIndex) =>
+        chat.agentId === agentId && chat.role === 'user' ? chatIndex : index,
+      -1
+    );
+    let latestAgentIndex = -1;
+    for (let i = this.chats.length - 1; i > lastUserIndex; i--) {
+      const chat = this.chats[i];
+      if (chat.agentId === agentId && chat.role === 'agent') {
+        latestAgentIndex = i;
+        break;
+      }
+    }
+
+    if (latestAgentIndex < 0) {
+      const dedupeKey = `${agentId}:agent:${key}`;
+      this.loggedChatKeys.add(dedupeKey);
+      this.loggedAgentTexts.set(dedupeKey, text);
+      this.pushSyncedChat(agentId, 'agent', key, text);
+      if (text.includes('BEGIN_TOOL')) {
+        this.setTextDisplayStatus(agentId, text, '进行中');
+      }
+      return true;
+    }
+
+    const previous = this.chats[latestAgentIndex];
+    const isSameReply =
+      previous.text === text ||
+      (text.length > previous.text.length && text.startsWith(previous.text)) ||
+      (previous.text.length > text.length && previous.text.startsWith(text));
+    if (!isSameReply) return null;
+
+    if (previous.text === text && previous.key === key) return false;
+
+    const previousKey = previous.key;
+    const isGrowth = text.length > previous.text.length;
+    if (isGrowth || previous.text !== text) previous.text = text;
+    if (previousKey !== key) {
+      if (previousKey) {
+        const previousDedupeKey = `${agentId}:agent:${previousKey}`;
+        this.loggedChatKeys.delete(previousDedupeKey);
+        this.loggedAgentTexts.delete(previousDedupeKey);
+      }
+      previous.key = key;
+    }
+    const dedupeKey = `${agentId}:agent:${key}`;
+    this.loggedChatKeys.add(dedupeKey);
+    this.loggedAgentTexts.set(dedupeKey, previous.text);
+    if ((isGrowth || previous.text.includes('BEGIN_TOOL')) && text.includes('BEGIN_TOOL')) {
+      this.setTextDisplayStatus(agentId, text, '进行中');
+    }
+    return true;
   }
 
   private updateGrowingAgentReply(
@@ -1275,6 +1410,18 @@ export class AgentSession {
   }
 
   private async sendToolResult(agentId: string, message: string): Promise<void> {
+    // 回传时面板已有完整 call-tool，视作 loading 已结束并定稿展示
+    this.settleAgentDisplayOnToolResult(agentId);
+    // 本地先入队工具结果，推进轮次边界；展示层仍会过滤 [SYSTEM]
+    if (message.trim()) {
+      const lastUser = [...this.chats]
+        .reverse()
+        .find((c) => c.role === 'user' && c.agentId === agentId);
+      if (!lastUser || lastUser.text.trim() !== message.trim()) {
+        this.chats.push({ agentId, role: 'user', text: message });
+        void this.saveChatLog(agentId, 'user', message);
+      }
+    }
     try {
       await this.bridge.sendMessage(agentId, message);
       this.setStatus(agentId, 'waiting');
@@ -1287,6 +1434,91 @@ export class AgentSession {
       });
       this.notify();
     }
+  }
+
+  /** 是否为同一条 agent 回复的生长/残缺关系 */
+  private isSameAgentReplyText(left: string, right: string): boolean {
+    if (left === right) return true;
+    if (right.length > left.length && right.startsWith(left)) return true;
+    if (left.length > right.length && left.startsWith(right)) return true;
+    return false;
+  }
+
+  /** 工具回传：用完整正文定稿气泡，并标记 loading 已 false */
+  private settleAgentDisplayOnToolResult(agentId: string): void {
+    const pending = this.pendingToolSource.get(agentId);
+    if (!pending?.text.trim()) return;
+
+    const { text, messageIndex } = pending;
+    if (messageIndex) {
+      this.settledAgentReplies.add(`${agentId}\n${messageIndex}`);
+    }
+
+    let targetIndex = -1;
+    if (messageIndex) {
+      // 有 index 时只定稿该气泡；找不到则新建，绝不回退覆盖上一轮
+      targetIndex = this.findChatIndex(agentId, 'agent', messageIndex);
+    } else {
+      const lastUserIndex = this.chats.reduce(
+        (index, chat, chatIndex) =>
+          chat.agentId === agentId && chat.role === 'user' ? chatIndex : index,
+        -1
+      );
+      for (let i = this.chats.length - 1; i > lastUserIndex; i--) {
+        if (this.chats[i].agentId === agentId && this.chats[i].role === 'agent') {
+          // 仅当与最新气泡同轮才复用，否则新建
+          if (this.isSameAgentReplyText(this.chats[i].text, text)) {
+            targetIndex = i;
+          }
+          break;
+        }
+      }
+    }
+
+    if (targetIndex >= 0) {
+      const prev = this.chats[targetIndex];
+      const previousKey = prev.key;
+      // 同 key / 同轮：以工具通道定稿为准
+      if (
+        messageIndex ||
+        text.length >= prev.text.length ||
+        (text.includes('END_TOOL') && !prev.text.includes('END_TOOL')) ||
+        this.isSameAgentReplyText(prev.text, text)
+      ) {
+        prev.text = text;
+      }
+      if (messageIndex && previousKey !== messageIndex) {
+        if (previousKey) {
+          this.loggedChatKeys.delete(`${agentId}:agent:${previousKey}`);
+          this.loggedAgentTexts.delete(`${agentId}:agent:${previousKey}`);
+        }
+        prev.key = messageIndex;
+      }
+      if (prev.key) {
+        const dedupeKey = `${agentId}:agent:${prev.key}`;
+        this.loggedChatKeys.add(dedupeKey);
+        this.loggedAgentTexts.set(dedupeKey, prev.text);
+      }
+    } else {
+      this.pushSyncedChat(agentId, 'agent', messageIndex, text);
+      if (messageIndex) {
+        const dedupeKey = `${agentId}:agent:${messageIndex}`;
+        this.loggedChatKeys.add(dedupeKey);
+        this.loggedAgentTexts.set(dedupeKey, text);
+      }
+    }
+
+    // 视作 loading 已变为 false，便于 waiting 结束与后续同步走定稿路径
+    const snap = this.lastPollSnapshots.get(agentId);
+    if (snap) {
+      this.lastPollSnapshots.set(agentId, { ...snap, loading: false });
+    }
+    const watch = this.waitingWatch.get(agentId);
+    if (watch) {
+      watch.changeSince = Date.now() - 3000;
+    }
+    void this.saveChatLog(agentId, 'agent', text);
+    this.notify();
   }
 
   private async runPowershellWithProgress(
@@ -1411,9 +1643,10 @@ export class AgentSession {
     agentId: string,
     text: string,
     key?: string,
-    opts?: { force?: boolean }
+    opts?: { force?: boolean; messageIndex?: string }
   ): Promise<void> {
     const force = !!opts?.force;
+    const messageIndex = opts?.messageIndex ?? '';
     if (!force) {
       const pending = this.pendingDecisions.get(agentId);
       if (pending) {
@@ -1499,32 +1732,50 @@ export class AgentSession {
     }
 
     this.incompleteConfirm.onContentChange(agentId, text);
+    // 供回传工具结果时定稿面板
+    this.pendingToolSource.set(agentId, { text, messageIndex });
 
     const opsFp = fileOperationsFingerprint(operations);
     const inflightKey = `${agentId}:${opsFp}`;
+    const execDedupeKey = toolExecDedupeKey(agentId, messageIndex, opsFp);
     if (!force) {
       if (this.inflightToolOps.has(inflightKey)) return;
 
-      const history = this.chats
-        .filter((c) => c.agentId === agentId && (c.role === 'user' || c.role === 'agent'))
-        .map((c) => c.text)
-        .join('\n');
-      const last = this.chats.filter((c) => c.agentId === agentId).at(-1)?.text;
-      const transcript = last === text || history.includes(text) ? history : `${history}\n${text}`;
-      if (isToolCallAlreadyReported(transcript, operations)) {
-        this.setStatus(agentId, 'waiting');
-        return;
-      }
-      const responseKey = `${agentId}\n${text}`;
-      if (this.processedToolResponses.has(responseKey)) {
-        this.setStatus(agentId, 'waiting');
-        return;
+      const lastIdx = this.lastToolMessageIndex.get(agentId) ?? '';
+      const isNewerIndex =
+        messageIndex !== '' && compareMessageIndex(messageIndex, lastIdx) > 0;
+
+      if (!isNewerIndex) {
+        if (this.processedToolOps.has(execDedupeKey)) {
+          this.setStatus(agentId, 'waiting');
+          return;
+        }
+        const history = this.chats
+          .filter((c) => c.agentId === agentId && (c.role === 'user' || c.role === 'agent'))
+          .map((c) => c.text)
+          .join('\n');
+        const last = this.chats.filter((c) => c.agentId === agentId).at(-1)?.text;
+        const transcript =
+          last === text || history.includes(text) ? history : `${history}\n${text}`;
+        if (isToolCallAlreadyReported(transcript, operations)) {
+          this.setStatus(agentId, 'waiting');
+          return;
+        }
       }
     }
 
     if (!force) {
       this.inflightToolOps.add(inflightKey);
+      this.processedToolOps.add(execDedupeKey);
+      if (messageIndex !== '') {
+        const prev = this.lastToolMessageIndex.get(agentId) ?? '';
+        if (compareMessageIndex(messageIndex, prev) > 0) {
+          this.lastToolMessageIndex.set(agentId, messageIndex);
+        }
+      }
     }
+    // 一开始执行就定稿展示，避免一直等站点 loading=false
+    this.settleAgentDisplayOnToolResult(agentId);
     for (const op of operations) {
       this.setOpDisplayStatus(agentId, op, '进行中');
     }
@@ -1546,7 +1797,6 @@ export class AgentSession {
         await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
       }
       this.setStatus(agentId, 'waiting');
-      if (!force) this.processedToolResponses.add(`${agentId}\n${text}`);
       return;
     }
 
@@ -1628,7 +1878,6 @@ export class AgentSession {
       }
     }
     this.setStatus(agentId, 'waiting');
-    if (!force) this.processedToolResponses.add(`${agentId}\n${text}`);
   }
 
   private addLog(op: FileOperation, status: LogStatus, message?: string): void {
@@ -1656,6 +1905,9 @@ export class AgentSession {
     }
     this.waitingWatch.clear();
     this.lastPollSnapshots.clear();
+    this.staleForceAttempted.clear();
+    this.settledAgentReplies.clear();
+    this.pendingToolSource.clear();
     this.incompleteConfirm.clearAll();
     for (const pending of this.pendingDecisions.values()) {
       pending.resolve(null);

@@ -109,6 +109,10 @@ export {
   fileOperationsFingerprint,
   isToolCallAlreadyReported,
   isToolResultEcho,
+  compareMessageIndex,
+  messageIndexSortKey,
+  toolExecDedupeKey,
+  shouldForceStaleCallTool,
   SYSTEM_MARKER,
 } from './agent/fileOperationsFingerprint.js';
 export {

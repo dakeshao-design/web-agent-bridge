@@ -80,9 +80,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     },
   });
 
-  if (context.extensionMode !== vscode.ExtensionMode.Production) {
-    startExtensionDebugServer(context, { session, host: hostProcess });
-  }
+  // 本机回环 + token 鉴权；安装版也需 CLI 调试
+  startExtensionDebugServer(context, { session, host: hostProcess });
 }
 
 export function deactivate(): void {

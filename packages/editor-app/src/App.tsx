@@ -10,6 +10,9 @@ import {
   buildPowershellTerminatedResult,
   fileOperationsFingerprint,
   isToolCallAlreadyReported,
+  compareMessageIndex,
+  toolExecDedupeKey,
+  shouldForceStaleCallTool,
   hasIncompleteCallTool,
   isIncompleteFromLastConversation,
   buildIncompleteCallToolHint,
@@ -151,6 +154,13 @@ export default function App() {
   const boundsRef = useRef({ x: 0, y: 0, width: 400, height: 600 });
   const mainContentRef = useRef<HTMLElement | null>(null);
   const inflightToolOpsRef = useRef<Set<string>>(new Set());
+  const processedToolOpsRef = useRef<Set<string>>(new Set());
+  const lastToolMessageIndexRef = useRef<Map<string, string>>(new Map());
+  const staleForceAttemptedRef = useRef<Set<string>>(new Set());
+  const settledAgentRepliesRef = useRef<Set<string>>(new Set());
+  const pendingToolSourceRef = useRef<
+    Map<string, { text: string; messageIndex: string }>
+  >(new Map());
   const loggedToolCaptureRef = useRef<Set<string>>(new Set());
   const loggedChatKeysRef = useRef<Set<string>>(new Set());
   const loggedAgentTextsRef = useRef<Map<string, string>>(new Map());
@@ -184,7 +194,12 @@ export default function App() {
   const composerInitPendingRef = useRef(new Set<string>());
   const composerInitGenRef = useRef(new Map<string, number>());
   const handleAgentResponseRef = useRef<
-    (agentId: string, text: string, key?: string, opts?: { force?: boolean }) => Promise<void>
+    (
+      agentId: string,
+      text: string,
+      key?: string,
+      opts?: { force?: boolean; messageIndex?: string } | string
+    ) => Promise<void>
   >(async () => undefined);
 
   useEffect(() => {
@@ -305,6 +320,15 @@ export default function App() {
     loggedToolCaptureRef.current.clear();
     loggedChatKeysRef.current.clear();
     loggedAgentTextsRef.current.clear();
+    processedToolOpsRef.current.clear();
+    lastToolMessageIndexRef.current.delete(agentId);
+    pendingToolSourceRef.current.delete(agentId);
+    for (const key of [...staleForceAttemptedRef.current]) {
+      if (key.startsWith(`${agentId}\n`)) staleForceAttemptedRef.current.delete(key);
+    }
+    for (const key of [...settledAgentRepliesRef.current]) {
+      if (key.startsWith(`${agentId}\n`)) settledAgentRepliesRef.current.delete(key);
+    }
     setChatLogFilePath(paths.chat);
     setRuntimeLogFilePath(paths.runtime);
     setChatLogEntries([]);
@@ -361,11 +385,30 @@ export default function App() {
     [getAgentName, refreshChatLog]
   );
 
+  const settleAgentDisplayOnToolResult = useCallback(
+    async (agentId: string) => {
+      const pending = pendingToolSourceRef.current.get(agentId);
+      if (!pending?.text.trim()) return;
+      const { text, messageIndex } = pending;
+      if (messageIndex) {
+        settledAgentRepliesRef.current.add(`${agentId}\n${messageIndex}`);
+      }
+      await logAgentMessage(agentId, text);
+      const watch = waitingWatchRef.current.get(agentId);
+      if (watch) {
+        watch.changeSince = Date.now() - 3000;
+      }
+    },
+    [logAgentMessage]
+  );
+
   const sendToolResultToAgent = useCallback(
     async (agentId: string, message: string) => {
+      // 回传时视作 loading 已结束，定稿完整 agent 正文
+      await settleAgentDisplayOnToolResult(agentId);
       await agentBridge.sendMessage(agentId, message);
     },
-    []
+    [settleAgentDisplayOnToolResult]
   );
 
   const logAndSendToAgent = useCallback(
@@ -439,10 +482,31 @@ export default function App() {
   );
 
   const handleChatMessage = useCallback(
-    async (agentId: string, role: 'user' | 'agent', key: string, text: string) => {
+    async (
+      agentId: string,
+      role: 'user' | 'agent',
+      key: string,
+      text: string,
+      _meta?: { loading?: boolean; messageIndex?: string }
+    ) => {
       incompleteConfirmRef.current.onContentChange(agentId, text);
 
+      // 空 key 仅工具通道，不入对话日志
+      if (role === 'agent' && key === '') {
+        return;
+      }
+
       if (role === 'agent') {
+        // 工具已定稿：忽略更短的 loading 残缺
+        if (
+          key !== '' &&
+          settledAgentRepliesRef.current.has(`${agentId}\n${key}`)
+        ) {
+          const prevSettled = loggedAgentTextsRef.current.get(`${agentId}:agent:${key}`);
+          if (prevSettled && text.length < prevSettled.length) {
+            return;
+          }
+        }
         const dedupeKey = `${agentId}:agent:${key}`;
         const prevText = loggedAgentTextsRef.current.get(dedupeKey);
         if (key !== '' && loggedChatKeysRef.current.has(dedupeKey)) {
@@ -494,11 +558,20 @@ export default function App() {
   );
 
   const handleAgentResponse = useCallback(
-    async (agentId: string, text: string, key?: string, opts?: { force?: boolean }) => {
+    async (
+      agentId: string,
+      text: string,
+      key?: string,
+      opts?: { force?: boolean; messageIndex?: string } | string
+    ) => {
       // Host 模式下由 VS Code 扩展执行工具，避免相对路径落到 AppData
       if (agentHostModeRef.current) return;
 
-      const force = !!opts?.force;
+      // 兼容 onResponse(agentId, text, key, messageIndex)
+      const normalizedOpts =
+        typeof opts === 'string' ? { messageIndex: opts } : opts ?? {};
+      const force = !!normalizedOpts.force;
+      const messageIndex = normalizedOpts.messageIndex ?? '';
       if (!force) {
         const pending = pendingPowershellDecisionRef.current.get(agentId);
         if (pending) {
@@ -580,40 +653,61 @@ export default function App() {
       }
 
       incompleteConfirmRef.current.onContentChange(agentId, text);
+      pendingToolSourceRef.current.set(agentId, { text, messageIndex });
 
       const opsFp = fileOperationsFingerprint(operations);
       const inflightKey = `${agentId}:${opsFp}`;
+      const execDedupeKey = toolExecDedupeKey(agentId, messageIndex, opsFp);
       if (!force) {
         if (inflightToolOpsRef.current.has(inflightKey)) {
           return;
         }
 
-        const history = conversationLogService
-          .getEntries()
-          .filter(
-            (entry) =>
-              entry.agentId === agentId &&
-              (entry.role === 'agent' || entry.role === 'user' || entry.role === 'shell')
-          )
-          .map((entry) => entry.content)
-          .join('\n');
-        const lastEntry = conversationLogService
-          .getEntries()
-          .filter((entry) => entry.agentId === agentId)
-          .map((entry) => entry.content)
-          .at(-1);
-        const transcript =
-          lastEntry === text || history.includes(text) ? history : `${history}\n${text}`;
-        if (isToolCallAlreadyReported(transcript, operations)) {
-          setAgentStatus(agentId, 'waiting');
-          return;
+        const lastIdx = lastToolMessageIndexRef.current.get(agentId) ?? '';
+        const isNewerIndex =
+          messageIndex !== '' && compareMessageIndex(messageIndex, lastIdx) > 0;
+
+        if (!isNewerIndex) {
+          if (processedToolOpsRef.current.has(execDedupeKey)) {
+            setAgentStatus(agentId, 'waiting');
+            return;
+          }
+          const history = conversationLogService
+            .getEntries()
+            .filter(
+              (entry) =>
+                entry.agentId === agentId &&
+                (entry.role === 'agent' || entry.role === 'user' || entry.role === 'shell')
+            )
+            .map((entry) => entry.content)
+            .join('\n');
+          const lastEntry = conversationLogService
+            .getEntries()
+            .filter((entry) => entry.agentId === agentId)
+            .map((entry) => entry.content)
+            .at(-1);
+          const transcript =
+            lastEntry === text || history.includes(text) ? history : `${history}\n${text}`;
+          if (isToolCallAlreadyReported(transcript, operations)) {
+            setAgentStatus(agentId, 'waiting');
+            return;
+          }
         }
       }
 
       setAgentStatus(agentId, 'waiting');
       if (!force) {
         inflightToolOpsRef.current.add(inflightKey);
+        processedToolOpsRef.current.add(execDedupeKey);
+        if (messageIndex !== '') {
+          const prev = lastToolMessageIndexRef.current.get(agentId) ?? '';
+          if (compareMessageIndex(messageIndex, prev) > 0) {
+            lastToolMessageIndexRef.current.set(agentId, messageIndex);
+          }
+        }
       }
+      // 一开始执行就定稿展示
+      await settleAgentDisplayOnToolResult(agentId);
 
       // 无工作区时不执行工具（Host 静默进程亦走此分支，交由 VS Code 扩展处理）
       const root = workspaceRoot.trim();
@@ -882,6 +976,7 @@ export default function App() {
       refreshChatLog,
       resolveFilePath,
       sendToolResultToAgent,
+      settleAgentDisplayOnToolResult,
       setAgentStatus,
       workspaceRoot,
     ]
@@ -919,6 +1014,7 @@ export default function App() {
           }
 
           const snap = await agentBridge.getPollSnapshot(agentId);
+
           const fingerprint = pollSnapshotFingerprint(snap);
           let watch = waitingWatchRef.current.get(agentId);
           if (!watch) {
@@ -935,7 +1031,57 @@ export default function App() {
           if (snap.loading || Date.now() - watch.changeSince < 3000) {
             setAgentStatus(agentId, 'waiting');
           } else if (status === 'waiting') {
-            setAgentStatus(agentId, 'idle');
+            // waiting 结束：Host 模式由扩展兜底，桌面自行强制
+            if (!agentHostModeRef.current) {
+              const messageIndex = snap.lastAgent?.index?.trim() ?? '';
+              const attemptKey = `${agentId}\n${messageIndex}`;
+              const alreadyProcessed =
+                messageIndex !== '' &&
+                [...processedToolOpsRef.current].some((k) =>
+                  k.startsWith(`${agentId}\n${messageIndex}\n`)
+                );
+              if (
+                shouldForceStaleCallTool({
+                  loading: snap.loading,
+                  lastAgentIndex: snap.lastAgent?.index,
+                  lastUserIndex: snap.lastUser?.index,
+                  agentText: snap.lastAgent?.text,
+                  alreadyAttempted:
+                    alreadyProcessed || staleForceAttemptedRef.current.has(attemptKey),
+                })
+              ) {
+                const text = snap.lastAgent?.text?.trim() ?? '';
+                if (text) {
+                  staleForceAttemptedRef.current.add(attemptKey);
+                  const callToolParser = callToolParserRef.current;
+                  const ops = [
+                    ...(parserRef.current?.parse(text) ?? []),
+                    ...(callToolParser?.parse(text) ?? []),
+                  ];
+                  const opsFp = fileOperationsFingerprint(ops);
+                  processedToolOpsRef.current.add(
+                    toolExecDedupeKey(agentId, messageIndex, opsFp)
+                  );
+                  const prev = lastToolMessageIndexRef.current.get(agentId) ?? '';
+                  if (messageIndex && compareMessageIndex(messageIndex, prev) > 0) {
+                    lastToolMessageIndexRef.current.set(agentId, messageIndex);
+                  }
+                  console.debug(
+                    `[wab] stale call-tool force agent=${agentId} index=${messageIndex} len=${text.length}`
+                  );
+                  await handleAgentResponseRef.current(agentId, text, '', {
+                    force: true,
+                    messageIndex,
+                  });
+                }
+              }
+            }
+            const busyAfterForce =
+              [...inflightToolOpsRef.current].some((k) => k.startsWith(`${agentId}:`)) ||
+              pendingPowershellDecisionRef.current.has(agentId);
+            if (!busyAfterForce) {
+              setAgentStatus(agentId, 'idle');
+            }
           }
         }
       })();

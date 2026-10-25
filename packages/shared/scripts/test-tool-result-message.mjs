@@ -3,7 +3,10 @@ import {
   buildToolResultMessage,
   buildToolResultFromOperation,
 } from '../dist/agent/toolResultMessage.js';
-import { isToolCallAlreadyReported } from '../dist/agent/fileOperationsFingerprint.js';
+import {
+  isToolCallAlreadyReported,
+  shouldForceStaleCallTool,
+} from '../dist/agent/fileOperationsFingerprint.js';
 
 const writeMsg = buildToolResultMessage('write_file', { path: 'src/a.ts', content: 'x' }, {
   ok: true,
@@ -78,6 +81,37 @@ assert.equal(
     { action: 'write', path: 'src/a.ts', content: 'hello world' },
   ]),
   true
+);
+
+// 多轮同参：回传在最新 call 之前 → 不算已报
+const callAgain = callBlock;
+const multiTurn = `${callBlock}\n\n${report}\n\n请再写一次\n\n${callAgain}`;
+assert.equal(
+  isToolCallAlreadyReported(multiTurn, [
+    { action: 'write', path: 'src/a.ts', content: 'hello world' },
+  ]),
+  false
+);
+
+assert.equal(
+  shouldForceStaleCallTool({
+    loading: false,
+    lastAgentIndex: '00010',
+    lastUserIndex: '00009',
+    agentText: callBlock,
+    alreadyAttempted: false,
+  }),
+  true
+);
+assert.equal(
+  shouldForceStaleCallTool({
+    loading: false,
+    lastAgentIndex: '00008',
+    lastUserIndex: '00009',
+    agentText: callBlock,
+    alreadyAttempted: false,
+  }),
+  false
 );
 
 console.log('test-tool-result-message: ok');

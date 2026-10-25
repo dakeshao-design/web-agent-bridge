@@ -97,11 +97,11 @@
           "default": 9791,
           "description": "Agent Host HTTP 端口"
         },
-        "webAgentBridge.debugPort": {
-          "type": "number",
-          "default": 9782,
-          "description": "扩展开发模式命令行调试 HTTP 端口"
-        },
+				"webAgentBridge.debugPort": {
+					"type": "number",
+					"default": 9782,
+					"description": "扩展命令行调试 HTTP 端口（127.0.0.1，需 hostToken）"
+				},
         "webAgentBridge.hostToken": {
           "type": "string",
           "default": "dev-token",

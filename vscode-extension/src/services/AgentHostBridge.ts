@@ -2,12 +2,18 @@ import type { AgentConfig, AgentStatus, IAgentBridge } from '@my-agent-editor/sh
 import { normalizeChatKey } from '@my-agent-editor/shared';
 import type { AgentHostProcess } from './AgentHostProcess';
 
-type ResponseHandler = (agentId: string, text: string, key?: string) => void | Promise<void>;
+type ResponseHandler = (
+  agentId: string,
+  text: string,
+  key?: string,
+  messageIndex?: string
+) => void | Promise<void>;
 type ChatHandler = (
   agentId: string,
   role: 'user' | 'agent',
   key: string,
-  text: string
+  text: string,
+  meta?: { loading?: boolean; messageIndex?: string }
 ) => void | Promise<void>;
 type BridgeCommHandler = (
   agentId: string,
@@ -119,7 +125,7 @@ export class AgentHostBridge implements IAgentBridge {
   }
 
   private eventContext(ev: Record<string, unknown>): string {
-    return `seq=${String(ev.seq ?? '?')} type=${String(ev.type || '')} agent=${String(ev.agentId || 'unknown')} key=${normalizeChatKey(ev.key)}`;
+    return `seq=${String(ev.seq ?? '?')} type=${String(ev.type || '')} agent=${String(ev.agentId || 'unknown')} key=${normalizeChatKey(ev.key)} msgIdx=${String(ev.messageIndex ?? '')}`;
   }
 
   private async dispatch(ev: Record<string, unknown>): Promise<void> {
@@ -129,11 +135,16 @@ export class AgentHostBridge implements IAgentBridge {
       const role = (ev.role === 'user' ? 'user' : 'agent') as 'user' | 'agent';
       const key = normalizeChatKey(ev.key);
       const text = String(ev.text || '');
+      const messageIndex =
+        ev.messageIndex != null && String(ev.messageIndex) !== ''
+          ? String(ev.messageIndex)
+          : '';
+      const loading = typeof ev.loading === 'boolean' ? ev.loading : undefined;
       const isToolResponse = role === 'agent' && text !== '' && key === '';
       if (this.chatHandler) {
         console.debug(`[wab-events] callback start chatHandler ${this.eventContext(ev)}`);
         try {
-          await this.chatHandler(agentId, role, key, text);
+          await this.chatHandler(agentId, role, key, text, { loading, messageIndex });
           console.debug(`[wab-events] callback complete chatHandler ${this.eventContext(ev)}`);
         } catch (error) {
           console.error(
@@ -149,7 +160,7 @@ export class AgentHostBridge implements IAgentBridge {
         }
         console.debug(`[wab-events] callback start responseHandler ${this.eventContext(ev)}`);
         try {
-          await this.responseHandler(agentId, text, key);
+          await this.responseHandler(agentId, text, key, messageIndex);
           console.debug(`[wab-events] callback complete responseHandler ${this.eventContext(ev)}`);
         } catch (error) {
           console.error(

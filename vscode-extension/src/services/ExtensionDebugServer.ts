@@ -10,8 +10,9 @@ Base URL: http://127.0.0.1:9782 (override with webAgentBridge.debugPort)
 Commands:
   GET  /debug/help
   GET  /debug/status
-  POST /debug/click          {"action":"agent-mode|open-folder|open-file|save|save-as|send-current-file|send-selection"}
+  POST /debug/click          {"action":"agent-mode|new-chat|open-folder|open-file|save|save-as|send-current-file|send-selection"}
   POST /debug/select-agent   {"agentId":"example"}
+  POST /debug/new-chat       {"agentId":"example"}  (可选 agentId，缺省用当前活动 Agent)
   POST /debug/open-folder    {"path":"C:/work/project"} (omit path to open dialog)
   POST /debug/send-prompt    {"text":"hello", "agentId":"example"}
   GET  /debug/agent-dom?agentId=example
@@ -119,6 +120,17 @@ async function handleRequest(
       writeJson(response, 200, { ok: true, agentId });
       return;
     }
+    if (request.method === 'POST' && path === '/debug/new-chat') {
+      if (typeof body.agentId === 'string' && body.agentId.trim()) {
+        session.setActiveAgent(body.agentId.trim());
+      }
+      await session.newChatSession();
+      writeJson(response, 200, {
+        ok: true,
+        agentId: session.getSnapshot().activeAgentId,
+      });
+      return;
+    }
     if (request.method === 'POST' && path === '/debug/send-prompt') {
       const text = typeof body.text === 'string' ? body.text : '';
       if (!text) throw new Error('text is required');
@@ -162,6 +174,7 @@ async function hostDebug(
 async function clickAction(action: string, session: AgentSession): Promise<void> {
   const handlers: Record<string, () => unknown> = {
     'agent-mode': () => session.sendAgentMode(),
+    'new-chat': () => session.newChatSession(),
     'open-folder': () => openFolder(),
     'open-file': () => openFile(),
     save: () => vscode.commands.executeCommand('workbench.action.files.save'),

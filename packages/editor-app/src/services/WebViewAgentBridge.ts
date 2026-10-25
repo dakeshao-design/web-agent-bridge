@@ -5,12 +5,18 @@ import { normalizeChatKey } from '@my-agent-editor/shared';
 
 type ChatRole = 'user' | 'agent';
 
-type ResponseHandler = (agentId: string, text: string, key?: string) => void | Promise<void>;
+type ResponseHandler = (
+  agentId: string,
+  text: string,
+  key?: string,
+  messageIndex?: string
+) => void | Promise<void>;
 type ChatMessageHandler = (
   agentId: string,
   role: ChatRole,
   key: string,
-  text: string
+  text: string,
+  meta?: { loading?: boolean; messageIndex?: string }
 ) => void | Promise<void>;
 
 type BridgeCommHandler = (
@@ -46,17 +52,27 @@ export class WebViewAgentBridge implements IAgentBridge {
       role?: ChatRole;
       key?: string | number;
       text: string;
+      messageIndex?: string;
+      loading?: boolean;
     }>('agent-chat-message', (event) => {
       const agentId = event.payload.agentId || 'unknown';
       const role = event.payload.role || 'agent';
       const key = normalizeChatKey(event.payload.key);
       const text = event.payload.text || '';
+      const messageIndex =
+        event.payload.messageIndex != null && String(event.payload.messageIndex) !== ''
+          ? String(event.payload.messageIndex)
+          : '';
+      const loading =
+        typeof event.payload.loading === 'boolean' ? event.payload.loading : undefined;
 
       void (async () => {
         const chatHandler = this.chatMessageCallbackRef.current;
         if (chatHandler) {
           try {
-            await Promise.resolve(chatHandler(agentId, role, key, text));
+            await Promise.resolve(
+              chatHandler(agentId, role, key, text, { loading, messageIndex })
+            );
           } catch (err) {
             console.error('[agent-bridge] chat handler failed', err);
           }
@@ -67,7 +83,7 @@ export class WebViewAgentBridge implements IAgentBridge {
           const responseHandler = this.responseCallbackRef.current;
           if (responseHandler) {
             try {
-              await Promise.resolve(responseHandler(agentId, text, key));
+              await Promise.resolve(responseHandler(agentId, text, key, messageIndex));
             } catch (err) {
               console.error('[agent-bridge] response handler failed', err);
             }

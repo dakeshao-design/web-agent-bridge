@@ -103,8 +103,8 @@ function collectMatchingReportEnds(
 }
 
 /**
- * 最近一次匹配的工具请求是否已在其后的 [SYSTEM] 中回传。
- * 若请求出现在最近回传之后、且中间无其它工具，视为双通道重复，也视为已回传。
+ * 最近一次同指纹 call 之后是否已有匹配 [SYSTEM] 回传。
+ * 仅此条件视为已报；多轮同参再调不算已报。
  */
 export function isToolCallAlreadyReported(
   transcript: string,
@@ -121,14 +121,53 @@ export function isToolCallAlreadyReported(
   const reportEnds = collectMatchingReportEnds(normalized, operations);
   const lastReportEnd = reportEnds.length > 0 ? reportEnds[reportEnds.length - 1] : -1;
 
-  if (lastReportEnd > lastCall.end) return true;
-  if (lastReportEnd < 0) return false;
+  return lastReportEnd > lastCall.end;
+}
 
-  const between = calls.filter(
-    (c) => c.start >= lastReportEnd && c.start < lastCall.start
-  );
-  if (between.some((c) => c.fp !== targetFp)) {
-    return false;
-  }
-  return true;
+/** 定宽 index 前缀，用于比较先后 */
+export function messageIndexSortKey(index: string): string {
+  if (!index) return '';
+  const m = index.match(/^\d+/);
+  if (!m) return index.slice(0, 5);
+  return m[0].slice(0, 5).padStart(5, '0');
+}
+
+/** 比较会话 messageIndex；正数表示 a 更新 */
+export function compareMessageIndex(a: string, b: string): number {
+  const ka = messageIndexSortKey(a);
+  const kb = messageIndexSortKey(b);
+  if (ka < kb) return -1;
+  if (ka > kb) return 1;
+  return 0;
+}
+
+/** 工具执行去重键：agent + messageIndex + 块指纹 */
+export function toolExecDedupeKey(
+  agentId: string,
+  messageIndex: string,
+  opsFingerprint: string
+): string {
+  return `${agentId}\n${messageIndex}\n${opsFingerprint}`;
+}
+
+/**
+ * waiting 结束时的兜底：loading 已 false，
+ * 且 lastAgent.index > lastUser.index，且正文可解析出 call-tool。
+ */
+export function shouldForceStaleCallTool(input: {
+  loading: boolean;
+  lastAgentIndex: string | undefined | null;
+  lastUserIndex: string | undefined | null;
+  agentText: string | undefined | null;
+  alreadyAttempted: boolean;
+}): boolean {
+  if (input.alreadyAttempted) return false;
+  if (input.loading) return false;
+  const agentIdx = input.lastAgentIndex?.trim() ?? '';
+  const userIdx = input.lastUserIndex?.trim() ?? '';
+  if (!agentIdx || !userIdx) return false;
+  if (compareMessageIndex(agentIdx, userIdx) <= 0) return false;
+  const text = input.agentText?.trim() ?? '';
+  if (!text || !/BEGIN_TOOL\s*:/i.test(text)) return false;
+  return parseCallToolBlocks(text).length > 0;
 }

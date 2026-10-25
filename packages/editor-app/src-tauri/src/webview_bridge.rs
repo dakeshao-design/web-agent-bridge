@@ -588,13 +588,23 @@ fn emit_agent_chat_event(
     role: &str,
     key: &str,
     text: &str,
+    message_index: &str,
+    loading: Option<bool>,
 ) -> Result<(), String> {
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "agentId": agent_id,
         "role": role,
         "key": key,
         "text": text
     });
+    if let Some(obj) = payload.as_object_mut() {
+        if !message_index.is_empty() {
+            obj.insert("messageIndex".into(), serde_json::json!(message_index));
+        }
+        if let Some(loading) = loading {
+            obj.insert("loading".into(), serde_json::json!(loading));
+        }
+    }
     // Agent Host：必须 app.emit，否则 EventBus（扩展侧）收不到
     if crate::is_agent_host_mode() {
         return app
@@ -677,7 +687,7 @@ fn flush_bridge_chat_messages(app: &AppHandle, label: &str, agent_id: &str) {
             continue;
         }
         let key = json_key_to_string(item.get("key"));
-        let _ = emit_agent_chat_event(app, agent_id, role, &key, text);
+        let _ = emit_agent_chat_event(app, agent_id, role, &key, text, "", None);
     }
 }
 
@@ -790,11 +800,19 @@ fn log_tool_capture_if_new(app: &AppHandle, agent_id: &str, source: &str, text: 
     emit_bridge_comm_log_inner(app, agent_id, "copy", &content);
 }
 
-fn emit_chat_message(app: &AppHandle, agent_id: &str, message: &ChatMessage) {
+fn emit_chat_message(app: &AppHandle, agent_id: &str, message: &ChatMessage, loading: bool) {
     if message.role == "agent" && message.text.contains("BEGIN_TOOL") {
         log_tool_capture_if_new(app, agent_id, "conversation", &message.text);
     }
-    let _ = emit_agent_chat_event(app, agent_id, &message.role, &message.key, &message.text);
+    let _ = emit_agent_chat_event(
+        app,
+        agent_id,
+        &message.role,
+        &message.key,
+        &message.text,
+        "",
+        Some(loading),
+    );
 }
 
 struct BridgeResponseMeta {
@@ -955,6 +973,7 @@ fn store_and_emit_agent_response(
     state: &WebviewState,
     agent_id: &str,
     text: &str,
+    message_index: &str,
 ) -> Result<(), String> {
     if text.contains("BEGIN_TOOL") {
         log_tool_capture_if_new(app, agent_id, "bridge-response", text);
@@ -969,7 +988,8 @@ fn store_and_emit_agent_response(
     }
     let log_content = format!("text:\n{}", text);
     emit_bridge_comm_log_inner(app, agent_id, "response", &log_content);
-    emit_agent_chat_event(app, agent_id, "agent", "", text)
+    // key 仍为空以标识工具通道；messageIndex 供执行去重
+    emit_agent_chat_event(app, agent_id, "agent", "", text, message_index, None)
 }
 
 fn seed_sync_from_snapshot(sync_state: &mut AgentSyncState, snap: &PollSnapshot) {
@@ -1167,7 +1187,7 @@ fn emit_snapshot_conversation(
 
     ready_messages.sort_by(|a, b| a.key.cmp(&b.key));
     for message in ready_messages {
-        emit_chat_message(app, agent_id, &message);
+        emit_chat_message(app, agent_id, &message, snap.loading);
     }
 }
 
@@ -1258,7 +1278,7 @@ fn process_bridge_response_sync(
     }
 
     let now = Instant::now();
-    let mut ready_text: Option<String> = None;
+    let mut ready: Option<(String, String)> = None;
 
     {
         let state = app.state::<WebviewState>();
@@ -1316,7 +1336,7 @@ fn process_bridge_response_sync(
                     sync_state.last_emitted_bridge_text = meta.text.clone();
                     sync_state.bridge_baseline = meta.text.clone();
                     sync_state.bridge_stable_tracker = None;
-                    ready_text = Some(meta.text.clone());
+                    ready = Some((meta.text.clone(), meta.key.clone()));
                 }
             }
             _ => {
@@ -1325,10 +1345,12 @@ fn process_bridge_response_sync(
         }
     }
 
-    if let Some(text) = ready_text {
+    if let Some((text, message_index)) = ready {
         eprintln!("[bridge-sync] emit agent={agent_id} len={}", text.len());
         let state = app.state::<WebviewState>();
-        if let Err(err) = store_and_emit_agent_response(app, state.inner(), agent_id, &text) {
+        if let Err(err) =
+            store_and_emit_agent_response(app, state.inner(), agent_id, &text, &message_index)
+        {
             eprintln!("[bridge-sync] emit failed: {err}");
         }
     }
@@ -2029,7 +2051,7 @@ pub async fn emit_agent_chat_message(
     key: String,
     text: String,
 ) -> Result<(), String> {
-    emit_agent_chat_event(&app, &agent_id, &role, &key, &text)
+    emit_agent_chat_event(&app, &agent_id, &role, &key, &text, "", None)
 }
 
 #[tauri::command]
@@ -2102,7 +2124,7 @@ pub async fn store_agent_response(
     agent_id: String,
     text: String,
 ) -> Result<(), String> {
-    store_and_emit_agent_response(&app, &state, &agent_id, &text)
+    store_and_emit_agent_response(&app, &state, &agent_id, &text, "")
 }
 
 #[tauri::command]
