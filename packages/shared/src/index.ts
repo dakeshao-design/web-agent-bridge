@@ -30,6 +30,7 @@ export {
   USER_MARKER,
   formatToolArgs,
   buildToolTable,
+  buildPromptResendReminder,
 } from './agent/agentModePrompt.js';
 export {
   PLAN_TEMPLATE_HOME_PATH,
@@ -85,7 +86,10 @@ export { buildSelectionMessage, type SelectionMessageInput } from './agent/selec
 export {
   extractCallToolNames,
   findUnknownCallToolNames,
+  findCallToolValidationIssues,
+  buildToolCallValidationResult,
   buildUnknownToolResult,
+  type ToolCallValidationIssue,
 } from './agent/unknownTool.js';
 export {
   buildToolResultFromOperation,

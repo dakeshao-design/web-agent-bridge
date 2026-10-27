@@ -33,6 +33,19 @@ export function buildToolTable(tools: readonly AgentToolDefinition[] = AGENT_TOO
   return [header, separator, ...rows].join('\n');
 }
 
+export function buildPromptResendReminder(
+  userPrompt: string,
+  toolPermissions?: ToolPermissionsConfig | null
+): string {
+  return [
+    '为避免遗忘关键信息，以下内容仅用于继续当前任务，不要重复已完成的工作。',
+    '最近一次用户提示词：',
+    userPrompt,
+    '当前可用工具列表：',
+    buildToolTable(listToolsForPrompt(toolPermissions)),
+  ].join('\n\n');
+}
+
 function buildFileLineLimitSection(readLimit?: number, writeLimit?: number): string {
   const parts: string[] = [];
   if (writeLimit != null && writeLimit > 0) {

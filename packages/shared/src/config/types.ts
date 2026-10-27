@@ -38,6 +38,8 @@ export interface AgentConfig {
   readFileLineLimit?: number;
   /** 头注释 @writeFileLineLimit；提示用，工具侧不强制 */
   writeFileLineLimit?: number;
+  /** 头注释 @promptResendEvery；每 N 条自动消息重发上下文，未声明或小于 1 时禁用 */
+  promptResendEvery?: number;
   /** 头注释 @sitePrompt；注入 Agent 模式提示词末尾 */
   siteAgentPrompt?: string;
 }

@@ -7,6 +7,7 @@
 ## 站点注册契约
 
 - 头注释 `@readFileLineLimit` / `@writeFileLineLimit`：读写行限
+- 可选头注释 `@promptResendEvery`：正整数 N 时，每 N 条自动 `[SYSTEM]` 消息附加最近一次用户提示词和当前可用工具列表；用户提交新提示词后重新计数。未设置或小于 1 时禁用
 - 可选头注释 `@waitBeforeSend`：点击发送后等待毫秒（未设置按 300），若未 loading 且 lastUser/lastAgent 的 key 未变则重试，最多 10 次
 - 可选头注释 `@newChatOnload`：默认 false；true 时 `getComposer().input` 非 null 后通知 Host 注入 Agent 模式提示词（有 `newChatSession` 则先调用）
 - 可选头注释 `@inputMode` / `@typeStrategy` / `@typeDelayMs`
@@ -34,6 +35,7 @@
 // @typeStrategy  paste
 // @readFileLineLimit  100
 // @writeFileLineLimit 100
+// @promptResendEvery 50
 // @waitBeforeSend     300
 // @newChatOnload      false
 // @sitePrompt ## 站点专用说明

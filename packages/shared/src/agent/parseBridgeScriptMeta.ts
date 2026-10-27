@@ -111,6 +111,12 @@ export function parseBridgeScriptMeta(
     if (Number.isFinite(n) && n > 0) agent.writeFileLineLimit = n;
   }
 
+  const promptResendEveryRaw = tags.get('promptResendEvery');
+  if (promptResendEveryRaw != null && /^\d+$/.test(promptResendEveryRaw)) {
+    const n = Number(promptResendEveryRaw);
+    if (Number.isSafeInteger(n) && n >= 1) agent.promptResendEvery = n;
+  }
+
   const siteAgentPrompt = parseSiteAgentPromptFromHeader(block[1]);
   if (siteAgentPrompt) {
     agent.siteAgentPrompt = siteAgentPrompt;

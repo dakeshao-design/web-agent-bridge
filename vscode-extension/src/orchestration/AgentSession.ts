@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import {
   buildAgentModePrompt,
+  buildPromptResendReminder,
   buildIncompleteCallToolHint,
   buildPowershellFinalResult,
   buildPowershellProgressMessage,
@@ -9,6 +10,7 @@ import {
   buildDeniedToolResult,
   buildPermissionAskMessage,
   buildUnknownToolResult,
+  buildToolCallValidationResult,
   CallToolParser,
   ConfigLoader,
   callToolDisplayStatusKey,
@@ -16,6 +18,7 @@ import {
   fileOperationsFingerprint,
   FileOperationParser,
   findUnknownCallToolNames,
+  findCallToolValidationIssues,
   formatCallToolDisplayHint,
   formatCallToolDisplayResult,
   getToolByAction,
@@ -106,6 +109,8 @@ export class AgentSession {
   private inflightToolOps = new Set<string>();
   private incompleteHints = new Set<string>();
   private unknownToolHints = new Set<string>();
+  /** 连续出现的无效 call-tool 错误计数：达到 2 时才附加工具列表 */
+  private invalidToolCallStreak = new Map<string, number>();
   private incompleteConfirm = new IncompleteCallToolConfirm();
   /** call-tool 面板摘要状态 */
   private callToolDisplayStatus = new Map<string, CallToolDisplayStatus>();
@@ -140,6 +145,10 @@ export class AgentSession {
   private pendingToolSource = new Map<
     string,
     { text: string; messageIndex: string }
+  >();
+  private promptResendState = new Map<
+    string,
+    { userPrompt: string; automaticMessageCount: number; toolListIncludedInCurrentCycle: boolean }
   >();
   /** 自动打开的登录窗，就绪后才 hide */
   private autoOpenedLogin = new Set<string>();
@@ -727,7 +736,11 @@ export class AgentSession {
     }
   }
 
-  async sendChat(text: string, explicitAgentId?: string): Promise<void> {
+  async sendChat(
+    text: string,
+    explicitAgentId?: string,
+    options: { recordUserPrompt?: boolean } = {}
+  ): Promise<void> {
     const agentId = explicitAgentId || this.activeAgentId;
     if (!agentId || !text.trim()) return;
     if (!this.hasWorkspace()) {
@@ -744,8 +757,16 @@ export class AgentSession {
       this.agentModeEnabled = true;
     }
     this.clearProcessedToolOps(agentId);
+    this.invalidToolCallStreak.delete(agentId);
     this.chats.push({ agentId, role: 'user', text });
     await this.saveChatLog(agentId, 'user', text);
+    if (options.recordUserPrompt !== false) {
+      this.promptResendState.set(agentId, {
+        userPrompt: text,
+        automaticMessageCount: 0,
+        toolListIncludedInCurrentCycle: false,
+      });
+    }
     this.setStatus(agentId, 'sending');
     await this.bridge.sendMessage(agentId, wireText);
     this.setStatus(agentId, 'waiting');
@@ -773,6 +794,7 @@ export class AgentSession {
     };
     dropPrefixed(this.loggedChatKeys);
     dropPrefixed(this.loggedAgentTexts);
+    this.promptResendState.delete(agentId);
     this.clearProcessedToolOps(agentId);
     this.lastToolMessageIndex.delete(agentId);
     this.pendingToolSource.delete(agentId);
@@ -782,6 +804,7 @@ export class AgentSession {
     for (const key of [...this.settledAgentReplies]) {
       if (key.startsWith(`${agentId}\n`)) this.settledAgentReplies.delete(key);
     }
+    this.invalidToolCallStreak.delete(agentId);
     dropPrefixed(this.incompleteHints);
     dropPrefixed(this.unknownToolHints);
     dropPrefixed(this.inflightToolOps);
@@ -876,7 +899,7 @@ export class AgentSession {
       this.skills
     );
     this.agentModeEnabled = true;
-    await this.sendChat(msg, agentId || undefined);
+    await this.sendChat(msg, agentId || undefined, { recordUserPrompt: false });
   }
 
   async getAgentModePromptText(): Promise<string> {
@@ -1410,6 +1433,24 @@ export class AgentSession {
   }
 
   private async sendToolResult(agentId: string, message: string): Promise<void> {
+    const interval = this.agents.find((item) => item.id === agentId)?.promptResendEvery;
+    const state = this.promptResendState.get(agentId);
+    const isSystemMessage = message.trimStart().startsWith(SYSTEM_MARKER);
+    let outgoingMessage = message;
+    let nextAutomaticMessageCount = state?.automaticMessageCount ?? 0;
+    let toolListIncludedInCurrentCycle = state?.toolListIncludedInCurrentCycle ?? false;
+    if (state && isSystemMessage && interval != null && interval >= 1) {
+      nextAutomaticMessageCount += 1;
+      if (nextAutomaticMessageCount >= interval) {
+        outgoingMessage = `${message}\n\n${buildPromptResendReminder(
+          state.userPrompt,
+          this.toolPermissions
+        )}`;
+        nextAutomaticMessageCount = 0;
+        toolListIncludedInCurrentCycle = true;
+      }
+    }
+
     // 回传时面板已有完整 call-tool，视作 loading 已结束并定稿展示
     this.settleAgentDisplayOnToolResult(agentId);
     // 本地先入队工具结果，推进轮次边界；展示层仍会过滤 [SYSTEM]
@@ -1417,13 +1458,20 @@ export class AgentSession {
       const lastUser = [...this.chats]
         .reverse()
         .find((c) => c.role === 'user' && c.agentId === agentId);
-      if (!lastUser || lastUser.text.trim() !== message.trim()) {
-        this.chats.push({ agentId, role: 'user', text: message });
-        void this.saveChatLog(agentId, 'user', message);
+      if (!lastUser || lastUser.text.trim() !== outgoingMessage.trim()) {
+        this.chats.push({ agentId, role: 'user', text: outgoingMessage });
+        void this.saveChatLog(agentId, 'user', outgoingMessage);
       }
     }
     try {
-      await this.bridge.sendMessage(agentId, message);
+      await this.bridge.sendMessage(agentId, outgoingMessage);
+      if (state && isSystemMessage && this.promptResendState.get(agentId) === state) {
+        this.promptResendState.set(agentId, {
+          ...state,
+          automaticMessageCount: nextAutomaticMessageCount,
+          toolListIncludedInCurrentCycle,
+        });
+      }
       this.setStatus(agentId, 'waiting');
     } catch (err) {
       this.setStatus(agentId, 'error');
@@ -1666,12 +1714,38 @@ export class AgentSession {
         this.setStatus(agentId, 'waiting');
         return;
       }
-      const unknownNames = findUnknownCallToolNames(text);
-      if (unknownNames.length > 0) {
-        const hintKey = `${agentId}:unknown:${unknownNames.join(',')}`;
+      const validation = findCallToolValidationIssues(text);
+      const unknownNames = validation.unknownToolNames.length
+        ? validation.unknownToolNames
+        : findUnknownCallToolNames(text);
+      const shouldReportValidation =
+        unknownNames.length > 0 ||
+        validation.missingParameters.length > 0 ||
+        validation.invalidArgs.length > 0;
+      if (shouldReportValidation) {
+        const streak = (this.invalidToolCallStreak.get(agentId) ?? 0) + 1;
+        this.invalidToolCallStreak.set(agentId, streak);
+
+        const hintKey = `${agentId}:validation:${JSON.stringify({
+          unknownNames,
+          missingParameters: validation.missingParameters,
+          invalidArgs: validation.invalidArgs,
+        })}`;
         if (!this.unknownToolHints.has(hintKey)) {
           this.unknownToolHints.add(hintKey);
-          const hint = buildUnknownToolResult(unknownNames, this.toolPermissions);
+          const includeToolTable =
+            streak >= 2 &&
+            !this.promptResendState.get(agentId)?.toolListIncludedInCurrentCycle;
+          const hint =
+            unknownNames.length > 0 &&
+            validation.missingParameters.length === 0 &&
+            validation.invalidArgs.length === 0
+              ? buildUnknownToolResult(unknownNames, this.toolPermissions, {
+                  includeToolTable,
+                })
+              : buildToolCallValidationResult(validation, this.toolPermissions, {
+                  includeToolTable,
+                });
           this.setTextDisplayStatus(
             agentId,
             text,
@@ -1687,6 +1761,7 @@ export class AgentSession {
         }
         return;
       }
+      this.invalidToolCallStreak.delete(agentId);
 
       if (key === '' && hasIncompleteCallTool(text)) {
         const lastAgent = [...this.chats]

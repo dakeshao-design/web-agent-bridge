@@ -8,6 +8,7 @@
     "clean": "node clean.mjs",
     "tauri": "pnpm --filter WABEditor tauri",
     "agent-host": "pnpm --filter agent-host start",
+    "ext:prepare": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\private\\sync-private.ps1 && pnpm --filter webagent-bridge copy-templates",
     "ext:compile": "pnpm --filter webagent-bridge compile",
     "ext:watch": "pnpm --filter webagent-bridge watch",
     "ext:package": "pnpm --filter WABEditor exec tauri build && pnpm --filter @my-agent-editor/shared build && pnpm --filter webagent-bridge package"

@@ -4,6 +4,7 @@ import {
   FileOperationParser,
   CallToolParser,
   buildAgentModePrompt,
+  buildPromptResendReminder,
   buildToolResultFromOperation,
   buildPowershellFinalResult,
   buildPowershellProgressMessage,
@@ -42,6 +43,7 @@ import {
   type AgentSkill,
   findSkillByName,
   pollSnapshotFingerprint,
+  SYSTEM_MARKER,
 } from '@my-agent-editor/shared';
 import { ask, message } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -161,6 +163,9 @@ export default function App() {
   const pendingToolSourceRef = useRef<
     Map<string, { text: string; messageIndex: string }>
   >(new Map());
+  const promptResendStateRef = useRef(
+    new Map<string, { userPrompt: string; automaticMessageCount: number }>()
+  );
   const loggedToolCaptureRef = useRef<Set<string>>(new Set());
   const loggedChatKeysRef = useRef<Set<string>>(new Set());
   const loggedAgentTextsRef = useRef<Map<string, string>>(new Map());
@@ -403,10 +408,38 @@ export default function App() {
   );
 
   const sendToolResultToAgent = useCallback(
-    async (agentId: string, message: string) => {
+    async (agentId: string, message: string, automatic = true) => {
+      const state = promptResendStateRef.current.get(agentId);
+      const interval = agentsRef.current.find((agent) => agent.id === agentId)
+        ?.promptResendEvery;
+      const isSystemMessage =
+        automatic && message.trimStart().startsWith(SYSTEM_MARKER);
+      let outgoingMessage = message;
+      let nextAutomaticMessageCount = state?.automaticMessageCount ?? 0;
+      if (state && isSystemMessage && interval != null && interval >= 1) {
+        nextAutomaticMessageCount += 1;
+        if (nextAutomaticMessageCount >= interval) {
+          outgoingMessage = `${message}\n\n${buildPromptResendReminder(
+            state.userPrompt,
+            toolPermissionsRef.current
+          )}`;
+          nextAutomaticMessageCount = 0;
+        }
+      }
+
       // 回传时视作 loading 已结束，定稿完整 agent 正文
       await settleAgentDisplayOnToolResult(agentId);
-      await agentBridge.sendMessage(agentId, message);
+      await agentBridge.sendMessage(agentId, outgoingMessage);
+      if (
+        state &&
+        isSystemMessage &&
+        promptResendStateRef.current.get(agentId) === state
+      ) {
+        promptResendStateRef.current.set(agentId, {
+          ...state,
+          automaticMessageCount: nextAutomaticMessageCount,
+        });
+      }
     },
     [settleAgentDisplayOnToolResult]
   );
@@ -417,8 +450,12 @@ export default function App() {
       const targetId = agentIdOverride || activeAgentIdRef.current;
       if (!targetId) return;
       await logUserMessage(targetId, message, source);
+      promptResendStateRef.current.set(targetId, {
+        userPrompt: message,
+        automaticMessageCount: 0,
+      });
       setAgentStatus(targetId, 'sending');
-      await sendToolResultToAgent(targetId, message);
+      await sendToolResultToAgent(targetId, message, false);
       setAgentStatus(targetId, 'waiting');
     },
     [workspaceRoot, logUserMessage, sendToolResultToAgent, setAgentStatus]
@@ -527,6 +564,13 @@ export default function App() {
       const dedupeKey = `${agentId}:user:${key}`;
       if (key !== '' && loggedChatKeysRef.current.has(dedupeKey)) {
         return;
+      }
+
+      if (!text.trimStart().startsWith(SYSTEM_MARKER)) {
+        promptResendStateRef.current.set(agentId, {
+          userPrompt: text,
+          automaticMessageCount: 0,
+        });
       }
 
       const entries = conversationLogService.getEntries();
@@ -1800,6 +1844,7 @@ export default function App() {
           if (onloadAgentModeDoneRef.current.has(agentId)) return;
           onloadAgentModeDoneRef.current.add(agentId);
           try {
+            promptResendStateRef.current.delete(agentId);
             if (!conversationLogService.getChatLogFilePath()) {
               await beginLogSession(agentId);
             }
@@ -1863,6 +1908,7 @@ export default function App() {
     if (!targetId) return;
     try {
       await agentBridge.newChatSession(targetId);
+      promptResendStateRef.current.delete(targetId);
       await new Promise((r) => setTimeout(r, 500));
       await beginLogSession(targetId);
       await handleSendAgentMode();
