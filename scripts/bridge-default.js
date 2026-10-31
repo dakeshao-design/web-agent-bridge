@@ -168,6 +168,7 @@
       return {
         input: scope.querySelector('textarea'),
         sendButton: scope.querySelector("button[type='submit']"),
+        stopButton: null,
       };
     }
 
@@ -181,6 +182,7 @@
             return {
               input: result.input || null,
               sendButton: result.sendButton || null,
+              stopButton: result.stopButton || null,
             };
           }
         } catch (err) {
@@ -196,6 +198,10 @@
 
     function querySendButton() {
       return getComposer(resolveCurrentDocument()).sendButton;
+    }
+
+    function queryStopButton() {
+      return getComposer(resolveCurrentDocument()).stopButton;
     }
 
     function unlockInputElement(el) {
@@ -446,6 +452,27 @@
         return true;
       }
       return clickSendFallback();
+    }
+
+    function clickStop() {
+      const btn = queryStopButton();
+      if (btn) {
+        btn.click();
+        return true;
+      }
+      return false;
+    }
+
+    /** 停止钮可能晚于发送出现：300ms×5，点到或已非 loading 则结束 */
+    async function clickStopWithRetry() {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        if (clickStop()) return true;
+        try {
+          if (!isLoading()) return false;
+        } catch (_) {}
+        await sleep(300);
+      }
+      return clickStop();
     }
 
     function clickSendFallback() {
@@ -1134,6 +1161,8 @@
         runSend(msg);
       } else if (msg.type === 'clickSend') {
         Promise.resolve(clickSendWithRetry());
+      } else if (msg.type === 'clickStop') {
+        Promise.resolve(clickStopWithRetry());
       } else if (msg.type === 'newChatSession') {
         startNewChatSession();
       } else if (msg.type === 'config') {
@@ -1180,6 +1209,8 @@
       typeInput,
       clickSend,
       clickSendWithRetry,
+      clickStop,
+      clickStopWithRetry,
       watchResponse,
       postToEditor,
       onEditorMessage,

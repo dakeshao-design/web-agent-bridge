@@ -6,6 +6,7 @@ export type WaitOutcome = 'exited' | 'timeout' | 'killed';
 
 export interface PowershellSession {
   readonly id: string;
+  readonly agentId: string | null;
   getOutput(): string;
   isExited(): boolean;
   getExitCode(): number | null;
@@ -30,6 +31,7 @@ function wrapPowershellUtf8(command: string): string {
 
 class NodePowershellSession implements PowershellSession {
   readonly id: string;
+  readonly agentId: string | null;
   private output = '';
   private exitCode: number | null = null;
   private exited = false;
@@ -37,8 +39,9 @@ class NodePowershellSession implements PowershellSession {
   private waiters: Waiter[] = [];
   private child: ChildProcessWithoutNullStreams;
 
-  constructor(command: string, cwd: string) {
+  constructor(command: string, cwd: string, agentId: string | null = null) {
     this.id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    this.agentId = agentId;
     this.child = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', wrapPowershellUtf8(command)],
@@ -145,6 +148,17 @@ class PowershellSessionRegistry {
     return n;
   }
 
+  killByAgentId(agentId: string): number {
+    let n = 0;
+    for (const s of [...this.sessions]) {
+      if (s.agentId === agentId && !s.isExited()) {
+        s.kill();
+        n += 1;
+      }
+    }
+    return n;
+  }
+
   runningCount(): number {
     let n = 0;
     for (const s of this.sessions) {
@@ -156,14 +170,22 @@ class PowershellSessionRegistry {
 
 export const powershellRegistry = new PowershellSessionRegistry();
 
-export function startPowershellSession(command: string, cwd: string): PowershellSession {
-  const session = new NodePowershellSession(command, cwd);
+export function startPowershellSession(
+  command: string,
+  cwd: string,
+  agentId?: string | null
+): PowershellSession {
+  const session = new NodePowershellSession(command, cwd, agentId ?? null);
   powershellRegistry.add(session);
   return session;
 }
 
 export function killAllPowershellSessions(): number {
   return powershellRegistry.killAll();
+}
+
+export function killPowershellSessionsForAgent(agentId: string): number {
+  return powershellRegistry.killByAgentId(agentId);
 }
 
 export const applyRunPowershell: FileToolHandler = async (op, ctx) => {

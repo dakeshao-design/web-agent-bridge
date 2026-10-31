@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   buildAgentModePrompt,
   buildPromptResendReminder,
+  getLatestSubstantivePrompt,
   buildIncompleteCallToolHint,
   buildPowershellFinalResult,
   buildPowershellProgressMessage,
@@ -30,6 +31,8 @@ import {
   compareMessageIndex,
   toolExecDedupeKey,
   shouldForceStaleCallTool,
+  shouldAutoContinueAfterStall,
+  STALL_AUTO_CONTINUE_MESSAGE,
   keyArgsFromToolArgs,
   mergeToolPermissions,
   buildSelectionMessage,
@@ -65,6 +68,7 @@ import { discoverSkills } from '../services/discoverSkills';
 import { applyFileOperation } from '../tools/applyFileOperation';
 import {
   killAllPowershellSessions,
+  killPowershellSessionsForAgent,
   startPowershellSession,
   type PowershellSession,
 } from '../tools/handlers/runPowershellHandler';
@@ -107,6 +111,12 @@ export class AgentSession {
   private parser = new FileOperationParser('structured');
   private callToolParser = new CallToolParser();
   private inflightToolOps = new Set<string>();
+  /** 每 agent 运行代数；stop 时自增，过期工具不再回传 */
+  private runGeneration = new Map<string, number>();
+  /** 用户停止后至下次发送前：不因 loading 回到 waiting，不新开工具 */
+  private stoppedUntilNextSend = new Set<string>();
+  /** 本等待周期已发过卡住续发，见到有正文 agent 前不再发 */
+  private autoContinueSentUntilAgent = new Set<string>();
   private incompleteHints = new Set<string>();
   private unknownToolHints = new Set<string>();
   /** 连续出现的无效 call-tool 错误计数：达到 2 时才附加工具列表 */
@@ -158,6 +168,14 @@ export class AgentSession {
   private composerInitPending = new Set<string>();
   /** 输入框就绪等待世代号，递增即取消 */
   private composerInitGen = new Map<string, number>();
+  /** 仅在站点就绪且首条用户消息发出后，才允许执行站点返回的工具 */
+  private initializedAgentSites = new Set<string>();
+  private firstUserMessageSent = new Set<string>();
+  /** 首条用户消息发送前的站点消息边界，用于排除历史 call-tool */
+  private toolExecutionBaseline = new Map<
+    string,
+    { agentIndex: string; userIndex: string }
+  >();
   /** WAB 侧栏视图是否可见 */
   private panelVisible = false;
 
@@ -294,6 +312,11 @@ export class AgentSession {
         continue;
       }
 
+      if (this.stoppedUntilNextSend.has(agentId)) {
+        if (status !== 'idle') this.setStatus(agentId, 'idle');
+        continue;
+      }
+
       const hasInflight = [...this.inflightToolOps].some((k) =>
         k.startsWith(`${agentId}:`)
       );
@@ -316,6 +339,7 @@ export class AgentSession {
         this.notify();
       }
       this.lastPollSnapshots.set(agentId, snap);
+      this.clearAutoContinueIfAgentReplied(agentId, snap);
 
       const fingerprint = pollSnapshotFingerprint(snap);
       let watch = this.waitingWatch.get(agentId);
@@ -339,9 +363,69 @@ export class AgentSession {
           [...this.inflightToolOps].some((k) => k.startsWith(`${agentId}:`)) ||
           this.pendingDecisions.has(agentId);
         if (!busyAfterForce) {
-          this.setStatus(agentId, 'idle');
+          const sentContinue = await this.maybeSendStallContinue(agentId, snap);
+          if (!sentContinue) {
+            this.setStatus(agentId, 'idle');
+          }
         }
       }
+    }
+  }
+
+  /** 见到有非空正文且新于 lastUser 的 agent 时，允许下一轮卡住续发 */
+  private clearAutoContinueIfAgentReplied(
+    agentId: string,
+    snap: BridgePollSnapshot
+  ): void {
+    if (!this.autoContinueSentUntilAgent.has(agentId)) return;
+    const userIdx = snap.lastUser?.index?.trim() ?? '';
+    const agentIdx = snap.lastAgent?.index?.trim() ?? '';
+    const agentText = (snap.lastAgent?.text ?? '').trim();
+    if (!userIdx || !agentIdx || !agentText) return;
+    if (compareMessageIndex(agentIdx, userIdx) > 0) {
+      this.autoContinueSentUntilAgent.delete(agentId);
+    }
+  }
+
+  /** waiting 结束时卡住则发一次 [SYSTEM]继续 */
+  private async maybeSendStallContinue(
+    agentId: string,
+    snap: BridgePollSnapshot
+  ): Promise<boolean> {
+    if (this.stoppedUntilNextSend.has(agentId)) return false;
+    if (
+      !shouldAutoContinueAfterStall({
+        loading: snap.loading,
+        lastUserIndex: snap.lastUser?.index,
+        lastAgentIndex: snap.lastAgent?.index,
+        lastAgentText: snap.lastAgent?.text,
+        alreadySentThisCycle: this.autoContinueSentUntilAgent.has(agentId),
+      })
+    ) {
+      return false;
+    }
+
+    this.autoContinueSentUntilAgent.add(agentId);
+    const message = STALL_AUTO_CONTINUE_MESSAGE;
+    this.chats.push({ agentId, role: 'user', text: message });
+    void this.saveChatLog(agentId, 'user', message);
+    try {
+      if (this.stoppedUntilNextSend.has(agentId)) return false;
+      await this.bridge.sendMessage(agentId, message);
+      if (!this.stoppedUntilNextSend.has(agentId)) {
+        this.setStatus(agentId, 'waiting');
+      }
+      console.debug(`[wab] stall auto-continue agent=${agentId}`);
+      return !this.stoppedUntilNextSend.has(agentId);
+    } catch (err) {
+      this.setStatus(agentId, 'error');
+      this.chats.push({
+        agentId,
+        role: 'system',
+        text: `卡住续发失败: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      this.notify();
+      return false;
     }
   }
 
@@ -703,6 +787,16 @@ export class AgentSession {
     if (!agent) return;
     if (this.bridge.hasAgent(agent.id)) {
       // 已创建但 Session 尚无 status 时补 idle，避免发送按钮一直禁用
+      if (await this.bridge.isComposerReady(agent.id)) {
+        this.initializedAgentSites.add(agent.id);
+        if (!this.statuses[agent.id]) {
+          this.statuses[agent.id] = 'idle';
+          this.notify();
+        }
+      } else {
+        this.setStatus(agent.id, 'waiting');
+        this.startComposerInitWait(agent.id);
+      }
       if (!this.statuses[agent.id]) {
         this.statuses[agent.id] = 'idle';
         this.notify();
@@ -712,6 +806,7 @@ export class AgentSession {
 
     try {
       const siteScript = await this.configService.readBridgeScript(agent.injectScript);
+      this.initializedAgentSites.delete(agent.id);
       this.setStatus(agent.id, 'waiting');
       this.startComposerInitWait(agent.id);
       await this.bridge.createAgent(agent, siteScript, template, true);
@@ -750,6 +845,12 @@ export class AgentSession {
       return;
     }
     await this.ensureHostAndAgents();
+    this.stoppedUntilNextSend.delete(agentId);
+    this.autoContinueSentUntilAgent.delete(agentId);
+    const isFirstUserMessage = !this.firstUserMessageSent.has(agentId);
+    const baseline = isFirstUserMessage
+      ? await this.bridge.getPollSnapshot(agentId)
+      : undefined;
     let wireText = text;
     if (this.pendingAgentModeInjection.has(agentId)) {
       this.pendingAgentModeInjection.delete(agentId);
@@ -762,13 +863,32 @@ export class AgentSession {
     await this.saveChatLog(agentId, 'user', text);
     if (options.recordUserPrompt !== false) {
       this.promptResendState.set(agentId, {
-        userPrompt: text,
+        userPrompt: getLatestSubstantivePrompt(
+          this.promptResendState.get(agentId)?.userPrompt,
+          text
+        ),
         automaticMessageCount: 0,
         toolListIncludedInCurrentCycle: false,
       });
     }
     this.setStatus(agentId, 'sending');
-    await this.bridge.sendMessage(agentId, wireText);
+    if (isFirstUserMessage) {
+      this.toolExecutionBaseline.set(agentId, {
+        agentIndex: baseline?.lastAgent?.index ?? '',
+        userIndex: baseline?.lastUser?.index ?? '',
+      });
+      this.firstUserMessageSent.add(agentId);
+    }
+    try {
+      await this.bridge.sendMessage(agentId, wireText);
+    } catch (err) {
+      if (isFirstUserMessage) {
+        this.firstUserMessageSent.delete(agentId);
+        this.toolExecutionBaseline.delete(agentId);
+      }
+      this.setStatus(agentId, 'error');
+      throw err;
+    }
     this.setStatus(agentId, 'waiting');
   }
 
@@ -795,9 +915,12 @@ export class AgentSession {
     dropPrefixed(this.loggedChatKeys);
     dropPrefixed(this.loggedAgentTexts);
     this.promptResendState.delete(agentId);
+    this.firstUserMessageSent.delete(agentId);
+    this.toolExecutionBaseline.delete(agentId);
     this.clearProcessedToolOps(agentId);
     this.lastToolMessageIndex.delete(agentId);
     this.pendingToolSource.delete(agentId);
+    this.autoContinueSentUntilAgent.delete(agentId);
     for (const key of [...this.staleForceAttempted]) {
       if (key.startsWith(`${agentId}\n`)) this.staleForceAttempted.delete(key);
     }
@@ -935,7 +1058,13 @@ export class AgentSession {
       void vscode.window.showInformationMessage('无 call-tool 可执行');
       return;
     }
-    await this.handleAgentResponse(agentId, found.text, undefined, { force: true });
+    const source = [...this.chats]
+      .reverse()
+      .find((chat) => chat.agentId === agentId && chat.role === 'agent' && chat.text === found.text);
+    await this.handleAgentResponse(agentId, found.text, undefined, {
+      force: true,
+      messageIndex: source?.key ?? '',
+    });
   }
 
   /** 新会话：站点 newChatSession 完成后等待 0.5s，清空本地对话缓存，标记待与首条用户消息合并注入 */
@@ -948,8 +1077,8 @@ export class AgentSession {
     try {
       await this.ensureHostAndAgents();
       await this.bridge.newChatSession(agentId);
-      await new Promise((r) => setTimeout(r, 500));
       this.resetAgentConversationState(agentId);
+      await new Promise((r) => setTimeout(r, 500));
       await this.beginLogSession(agentId);
       this.markPendingAgentModeInjection(agentId);
     } catch (err) {
@@ -999,10 +1128,14 @@ export class AgentSession {
   private cancelComposerInitWait(agentId: string): void {
     this.composerInitPending.delete(agentId);
     this.composerInitGen.set(agentId, (this.composerInitGen.get(agentId) ?? 0) + 1);
+    this.initializedAgentSites.delete(agentId);
+    this.firstUserMessageSent.delete(agentId);
+    this.toolExecutionBaseline.delete(agentId);
   }
 
   /** 首次建站：等到输入框就绪再从 waiting 回 idle */
   private startComposerInitWait(agentId: string): void {
+    this.initializedAgentSites.delete(agentId);
     this.composerInitPending.add(agentId);
     const gen = (this.composerInitGen.get(agentId) ?? 0) + 1;
     this.composerInitGen.set(agentId, gen);
@@ -1030,6 +1163,7 @@ export class AgentSession {
       }
       if (ready) {
         this.composerInitPending.delete(agentId);
+        this.initializedAgentSites.add(agentId);
         if (this.statuses[agentId] === 'waiting') {
           this.setStatus(agentId, 'idle');
         }
@@ -1110,6 +1244,49 @@ export class AgentSession {
     } else {
       void vscode.window.showInformationMessage('无运行中的 PowerShell');
     }
+  }
+
+  /** 面板停止：先本地取消，再尽力点站点 stop */
+  async stopAgent(agentId?: string | null): Promise<void> {
+    const id = agentId ?? this.activeAgentId;
+    if (!id) return;
+
+    const gen = (this.runGeneration.get(id) ?? 0) + 1;
+    this.runGeneration.set(id, gen);
+
+    const pending = this.pendingDecisions.get(id);
+    if (pending) {
+      pending.resolve(null);
+      this.pendingDecisions.delete(id);
+    }
+
+    for (const key of [...this.inflightToolOps]) {
+      if (key.startsWith(`${id}:`)) this.inflightToolOps.delete(key);
+    }
+
+    killPowershellSessionsForAgent(id);
+
+    // 本地权威：立刻禁止 call-tool 执行与工具回传；网站气泡仍照常同步
+    this.stoppedUntilNextSend.add(id);
+    this.autoContinueSentUntilAgent.delete(id);
+    this.waitingWatch.delete(id);
+    this.setStatus(id, 'idle');
+    this.chats.push({ agentId: id, role: 'system', text: '已停止当前运行' });
+    this.notify();
+
+    try {
+      await this.bridge.clickStop(id);
+    } catch {
+      // 站点无 stop 或 Host 失败时仍完成本地取消
+    }
+  }
+
+  private currentRunGeneration(agentId: string): number {
+    return this.runGeneration.get(agentId) ?? 0;
+  }
+
+  private isRunCancelled(agentId: string, startedAt: number): boolean {
+    return this.currentRunGeneration(agentId) !== startedAt;
   }
 
   private async ensureHostAndAgents(): Promise<void> {
@@ -1432,7 +1609,18 @@ export class AgentSession {
     });
   }
 
-  private async sendToolResult(agentId: string, message: string): Promise<void> {
+  private async sendToolResult(
+    agentId: string,
+    message: string,
+    opts?: { runGeneration?: number }
+  ): Promise<void> {
+    if (this.stoppedUntilNextSend.has(agentId)) return;
+    if (
+      opts?.runGeneration != null &&
+      this.isRunCancelled(agentId, opts.runGeneration)
+    ) {
+      return;
+    }
     const interval = this.agents.find((item) => item.id === agentId)?.promptResendEvery;
     const state = this.promptResendState.get(agentId);
     const isSystemMessage = message.trimStart().startsWith(SYSTEM_MARKER);
@@ -1451,6 +1639,15 @@ export class AgentSession {
       }
     }
 
+    // 回传前再校验：避免 stop 落在入口检查之后
+    if (this.stoppedUntilNextSend.has(agentId)) return;
+    if (
+      opts?.runGeneration != null &&
+      this.isRunCancelled(agentId, opts.runGeneration)
+    ) {
+      return;
+    }
+
     // 回传时面板已有完整 call-tool，视作 loading 已结束并定稿展示
     this.settleAgentDisplayOnToolResult(agentId);
     // 本地先入队工具结果，推进轮次边界；展示层仍会过滤 [SYSTEM]
@@ -1464,6 +1661,13 @@ export class AgentSession {
       }
     }
     try {
+      if (this.stoppedUntilNextSend.has(agentId)) return;
+      if (
+        opts?.runGeneration != null &&
+        this.isRunCancelled(agentId, opts.runGeneration)
+      ) {
+        return;
+      }
       await this.bridge.sendMessage(agentId, outgoingMessage);
       if (state && isSystemMessage && this.promptResendState.get(agentId) === state) {
         this.promptResendState.set(agentId, {
@@ -1472,7 +1676,9 @@ export class AgentSession {
           toolListIncludedInCurrentCycle,
         });
       }
-      this.setStatus(agentId, 'waiting');
+      if (!this.stoppedUntilNextSend.has(agentId)) {
+        this.setStatus(agentId, 'waiting');
+      }
     } catch (err) {
       this.setStatus(agentId, 'error');
       this.chats.push({
@@ -1605,7 +1811,8 @@ export class AgentSession {
 
     this.setOpDisplayStatus(agentId, op, '进行中');
 
-    const session: PowershellSession = startPowershellSession(command, cwd);
+    const runGen = this.currentRunGeneration(agentId);
+    const session: PowershellSession = startPowershellSession(command, cwd, agentId);
     const t0 = Date.now();
     let reported = 0;
     let sentFinal = false;
@@ -1620,7 +1827,9 @@ export class AgentSession {
         formatCallToolDisplayResult(result)
       );
       this.addLog(op, status, result.message);
-      await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
+      await this.sendToolResult(agentId, buildToolResultFromOperation(op, result), {
+        runGeneration: runGen,
+      });
     };
 
     while (true) {
@@ -1653,7 +1862,11 @@ export class AgentSession {
         elapsedSec,
         newOutput: neu,
       });
-      await this.sendToolResult(agentId, progress);
+      await this.sendToolResult(agentId, progress, { runGeneration: runGen });
+      if (this.isRunCancelled(agentId, runGen)) {
+        if (!session.isExited()) session.kill();
+        return {};
+      }
 
       const reply = await this.waitNextAgentReply(agentId);
       this.pendingDecisions.delete(agentId);
@@ -1695,6 +1908,10 @@ export class AgentSession {
   ): Promise<void> {
     const force = !!opts?.force;
     const messageIndex = opts?.messageIndex ?? '';
+    // stop 后本地权威：不执行 call-tool（含 force）
+    if (this.stoppedUntilNextSend.has(agentId)) return;
+    if (!(await this.canExecuteAgentTools(agentId, text, messageIndex))) return;
+    if (this.stoppedUntilNextSend.has(agentId)) return;
     if (!force) {
       const pending = this.pendingDecisions.get(agentId);
       if (pending) {
@@ -1856,11 +2073,14 @@ export class AgentSession {
     }
     this.setStatus(agentId, 'waiting');
 
+    const runGen = this.currentRunGeneration(agentId);
+    const sendOpts = { runGeneration: runGen };
     const readFileLineLimit = this.agents.find((a) => a.id === agentId)?.readFileLineLimit;
     const workspaceRoot = this.fileService.getWorkspaceRoot().trim();
     if (!workspaceRoot) {
       const noWs = '工作区未打开：请在当前窗口用「文件 → 打开文件夹」打开项目';
       for (const op of operations) {
+        if (this.isRunCancelled(agentId, runGen)) break;
         const result = { ok: false, message: noWs } satisfies ToolApplyResult;
         this.setOpDisplayStatus(
           agentId,
@@ -1869,14 +2089,17 @@ export class AgentSession {
           formatCallToolDisplayResult(result)
         );
         this.addLog(op, 'error', noWs);
-        await this.sendToolResult(agentId, buildToolResultFromOperation(op, result));
+        await this.sendToolResult(agentId, buildToolResultFromOperation(op, result), sendOpts);
       }
-      this.setStatus(agentId, 'waiting');
+      if (!this.isRunCancelled(agentId, runGen)) {
+        this.setStatus(agentId, 'waiting');
+      }
       return;
     }
 
     try {
     for (const op of operations) {
+      if (this.isRunCancelled(agentId, runGen)) break;
       const toolName = resolveToolNameForOperation(op);
       const effective = resolveEffectivePermission(
         toolName,
@@ -1894,7 +2117,7 @@ export class AgentSession {
           formatCallToolDisplayHint(denied)
         );
         this.addLog(op, 'error', '权限禁止');
-        await this.sendToolResult(agentId, denied);
+        await this.sendToolResult(agentId, denied, sendOpts);
         continue;
       }
       if (effective === 'ask') {
@@ -1903,6 +2126,7 @@ export class AgentSession {
           { modal: true },
           '允许'
         );
+        if (this.isRunCancelled(agentId, runGen)) break;
         if (pick !== '允许') {
           this.setOpDisplayStatus(
             agentId,
@@ -1918,6 +2142,7 @@ export class AgentSession {
 
       if (op.action === 'run_powershell') {
         const { skippedReply } = await this.runPowershellWithProgress(agentId, op);
+        if (this.isRunCancelled(agentId, runGen)) break;
         if (skippedReply) {
           await this.handleAgentResponse(agentId, skippedReply);
         }
@@ -1938,6 +2163,7 @@ export class AgentSession {
           void content;
         },
       });
+      if (this.isRunCancelled(agentId, runGen)) break;
       this.setOpDisplayStatus(
         agentId,
         op,
@@ -1945,14 +2171,63 @@ export class AgentSession {
         formatCallToolDisplayResult(result)
       );
       const toolResultMessage = buildToolResultFromOperation(op, result);
-      await this.sendToolResult(agentId, toolResultMessage);
+      await this.sendToolResult(agentId, toolResultMessage, sendOpts);
     }
   } finally {
       if (!force) {
         this.inflightToolOps.delete(inflightKey);
       }
     }
-    this.setStatus(agentId, 'waiting');
+    if (!this.isRunCancelled(agentId, runGen)) {
+      this.setStatus(agentId, 'waiting');
+    }
+  }
+
+  private async canExecuteAgentTools(
+    agentId: string,
+    text: string,
+    messageIndex: string
+  ): Promise<boolean> {
+    if (
+      !this.initializedAgentSites.has(agentId) ||
+      !this.firstUserMessageSent.has(agentId)
+    ) {
+      return false;
+    }
+
+    const baseline = this.toolExecutionBaseline.get(agentId);
+    if (!baseline) return false;
+
+    const snapshot = await this.bridge.getPollSnapshot(agentId);
+    const latestUserIndex = snapshot.lastUser?.index ?? '';
+    if (
+      !latestUserIndex ||
+      (baseline.userIndex &&
+        compareMessageIndex(latestUserIndex, baseline.userIndex) <= 0)
+    ) {
+      return false;
+    }
+
+    let responseIndex = messageIndex.trim();
+    if (!responseIndex) {
+      const latest = snapshot.lastAgent;
+      if (
+        !latest ||
+        (latest.text !== text &&
+          !latest.text.startsWith(text) &&
+          !text.startsWith(latest.text))
+      ) {
+        return false;
+      }
+      responseIndex = latest.index;
+    }
+
+    return (
+      responseIndex !== '' &&
+      compareMessageIndex(responseIndex, latestUserIndex) > 0 &&
+      (!baseline.agentIndex ||
+        compareMessageIndex(responseIndex, baseline.agentIndex) > 0)
+    );
   }
 
   private addLog(op: FileOperation, status: LogStatus, message?: string): void {
@@ -1981,6 +2256,7 @@ export class AgentSession {
     this.waitingWatch.clear();
     this.lastPollSnapshots.clear();
     this.staleForceAttempted.clear();
+    this.autoContinueSentUntilAgent.clear();
     this.settledAgentReplies.clear();
     this.pendingToolSource.clear();
     this.incompleteConfirm.clearAll();

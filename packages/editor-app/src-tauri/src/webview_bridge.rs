@@ -1954,6 +1954,33 @@ pub async fn click_agent_send(app: AppHandle, agent_id: String) -> Result<(), St
     Ok(())
 }
 
+/// 点击站点停止钮；不重置 baseline、不启动回复监视
+#[tauri::command]
+pub async fn click_agent_stop(app: AppHandle, agent_id: String) -> Result<(), String> {
+    let label = format!("agent-{}", agent_id);
+    let webview = app
+        .get_webview(&label)
+        .ok_or_else(|| format!("Webview not found: {}", label))?;
+    let script = r#"
+(function(){
+  try {
+    if (!window.__agentEditorBridge) return;
+    var fn = window.__agentEditorBridge.clickStopWithRetry
+      || window.__agentEditorBridge.clickStop;
+    if (typeof fn === 'function') {
+      Promise.resolve(fn.call(window.__agentEditorBridge));
+      return;
+    }
+    if (typeof window.__agentEditorBridge.onEditorMessage === 'function') {
+      window.__agentEditorBridge.onEditorMessage({ type: 'clickStop' });
+    }
+  } catch (e) {}
+})();
+"#;
+    webview.eval(script).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn push_agent_bridge_config(
     app: AppHandle,

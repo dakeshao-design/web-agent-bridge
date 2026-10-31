@@ -245,6 +245,10 @@
   document.getElementById('sendBtn').addEventListener('click', function () {
     const sendBtn = document.getElementById('sendBtn');
     if (sendBtn.disabled) return;
+    if (sendBtn.dataset.mode === 'stop') {
+      post('stop');
+      return;
+    }
     const text = inputEl.value;
     if (!text.trim()) return;
     post('send', { text: text });
@@ -255,7 +259,7 @@
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const sendBtn = document.getElementById('sendBtn');
-      if (sendBtn.disabled) return;
+      if (sendBtn.disabled || sendBtn.dataset.mode === 'stop') return;
       sendBtn.click();
     }
   });
@@ -365,7 +369,7 @@
       tabsEl.appendChild(btn);
     });
 
-    // 当前 Agent：执行中禁用；已连 Host 但尚未就绪（无 status）也禁用
+    // 当前 Agent：waiting/sending 时改为停止；已连 Host 但尚未就绪（无 status）禁用
     const sendBtn = document.getElementById('sendBtn');
     const activeId = snapshot.activeAgentId;
     const activeSt =
@@ -374,7 +378,15 @@
         : undefined;
     const busy = activeSt === 'sending' || activeSt === 'waiting';
     const pendingInit = !activeSt && !!snapshot.hostReady;
-    sendBtn.disabled = !activeId || busy || pendingInit;
+    if (busy && activeId) {
+      sendBtn.dataset.mode = 'stop';
+      sendBtn.textContent = '停止';
+      sendBtn.disabled = false;
+    } else {
+      sendBtn.dataset.mode = 'send';
+      sendBtn.textContent = '发送';
+      sendBtn.disabled = !activeId || pendingInit;
+    }
     if (planBtn) planBtn.disabled = !activeId || busy || pendingInit || !snapshot.workspaceRoot;
     updatePlanCreateButton();
 

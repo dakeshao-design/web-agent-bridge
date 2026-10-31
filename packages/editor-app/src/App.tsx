@@ -5,6 +5,7 @@ import {
   CallToolParser,
   buildAgentModePrompt,
   buildPromptResendReminder,
+  getLatestSubstantivePrompt,
   buildToolResultFromOperation,
   buildPowershellFinalResult,
   buildPowershellProgressMessage,
@@ -451,7 +452,10 @@ export default function App() {
       if (!targetId) return;
       await logUserMessage(targetId, message, source);
       promptResendStateRef.current.set(targetId, {
-        userPrompt: message,
+        userPrompt: getLatestSubstantivePrompt(
+          promptResendStateRef.current.get(targetId)?.userPrompt,
+          message
+        ),
         automaticMessageCount: 0,
       });
       setAgentStatus(targetId, 'sending');
@@ -568,7 +572,10 @@ export default function App() {
 
       if (!text.trimStart().startsWith(SYSTEM_MARKER)) {
         promptResendStateRef.current.set(agentId, {
-          userPrompt: text,
+          userPrompt: getLatestSubstantivePrompt(
+            promptResendStateRef.current.get(agentId)?.userPrompt,
+            text
+          ),
           automaticMessageCount: 0,
         });
       }

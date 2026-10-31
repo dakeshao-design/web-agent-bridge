@@ -171,3 +171,27 @@ export function shouldForceStaleCallTool(input: {
   if (!text || !/BEGIN_TOOL\s*:/i.test(text)) return false;
   return parseCallToolBlocks(text).length > 0;
 }
+
+/** 卡住自动续发的正文 */
+export const STALL_AUTO_CONTINUE_MESSAGE = `${SYSTEM_MARKER}继续`;
+
+/**
+ * waiting 结束时的卡住续发：loading 已 false，
+ * 末条仍为 user，或末条 agent 但正文为空。
+ */
+export function shouldAutoContinueAfterStall(input: {
+  loading: boolean;
+  lastUserIndex: string | undefined | null;
+  lastAgentIndex: string | undefined | null;
+  lastAgentText: string | undefined | null;
+  alreadySentThisCycle: boolean;
+}): boolean {
+  if (input.alreadySentThisCycle) return false;
+  if (input.loading) return false;
+  const userIdx = input.lastUserIndex?.trim() ?? '';
+  if (!userIdx) return false;
+  const agentIdx = input.lastAgentIndex?.trim() ?? '';
+  if (!agentIdx) return true;
+  if (compareMessageIndex(agentIdx, userIdx) <= 0) return true;
+  return !(input.lastAgentText ?? '').trim();
+}

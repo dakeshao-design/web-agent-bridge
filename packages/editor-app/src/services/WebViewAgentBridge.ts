@@ -219,6 +219,10 @@ export class WebViewAgentBridge implements IAgentBridge {
     await invoke('click_agent_send', { agentId });
   }
 
+  async clickStop(agentId: string): Promise<void> {
+    await invoke('click_agent_stop', { agentId });
+  }
+
   async newChatSession(agentId: string): Promise<void> {
     await invoke('new_agent_chat_session', { agentId });
   }

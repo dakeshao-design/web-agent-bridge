@@ -6,6 +6,8 @@ import {
 import {
   isToolCallAlreadyReported,
   shouldForceStaleCallTool,
+  shouldAutoContinueAfterStall,
+  STALL_AUTO_CONTINUE_MESSAGE,
 } from '../dist/agent/fileOperationsFingerprint.js';
 
 const writeMsg = buildToolResultMessage('write_file', { path: 'src/a.ts', content: 'x' }, {
@@ -110,6 +112,78 @@ assert.equal(
     lastUserIndex: '00009',
     agentText: callBlock,
     alreadyAttempted: false,
+  }),
+  false
+);
+
+assert.equal(STALL_AUTO_CONTINUE_MESSAGE, '[SYSTEM]继续');
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: false,
+    lastUserIndex: '00009',
+    lastAgentIndex: '00008',
+    lastAgentText: 'hi',
+    alreadySentThisCycle: false,
+  }),
+  true
+);
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: false,
+    lastUserIndex: '00009',
+    lastAgentIndex: null,
+    lastAgentText: null,
+    alreadySentThisCycle: false,
+  }),
+  true
+);
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: false,
+    lastUserIndex: '00009',
+    lastAgentIndex: '00010',
+    lastAgentText: '   ',
+    alreadySentThisCycle: false,
+  }),
+  true
+);
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: false,
+    lastUserIndex: '00009',
+    lastAgentIndex: '00010',
+    lastAgentText: 'done',
+    alreadySentThisCycle: false,
+  }),
+  false
+);
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: true,
+    lastUserIndex: '00009',
+    lastAgentIndex: null,
+    lastAgentText: null,
+    alreadySentThisCycle: false,
+  }),
+  false
+);
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: false,
+    lastUserIndex: '',
+    lastAgentIndex: null,
+    lastAgentText: null,
+    alreadySentThisCycle: false,
+  }),
+  false
+);
+assert.equal(
+  shouldAutoContinueAfterStall({
+    loading: false,
+    lastUserIndex: '00009',
+    lastAgentIndex: null,
+    lastAgentText: null,
+    alreadySentThisCycle: true,
   }),
   false
 );

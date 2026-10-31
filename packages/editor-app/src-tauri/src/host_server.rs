@@ -8,7 +8,7 @@ use tauri::{AppHandle, Listener, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::webview_bridge::{
-    agent_bridge_is_loading, agent_bridge_poll_snapshot, create_agent_webview,
+    agent_bridge_is_loading, agent_bridge_poll_snapshot, click_agent_stop, create_agent_webview,
     debug_eval_composer_ready, debug_query_agent, debug_query_bridge_response,
     debug_query_last_file_op, debug_reset_sync, fill_agent_message, hide_agent_webview,
     new_agent_chat_session, send_agent_message, show_agent_webview, WebviewBounds,
@@ -378,6 +378,18 @@ fn handle(
                 fill_agent_message(app2, label, agent_id, text).await
             })?;
             json_ok(json!({ "ok": true }))
+        }
+        (Method::Post, "/agents/stop") => {
+            let payload: AgentBody = parse_json(body)?;
+            if payload.agent_id.is_empty() {
+                return Err("agentId is required".into());
+            }
+            let app2 = app.clone();
+            let agent_id = payload.agent_id.clone();
+            tauri::async_runtime::block_on(async move {
+                click_agent_stop(app2, agent_id).await
+            })?;
+            json_ok(json!({ "ok": true, "agentId": payload.agent_id }))
         }
         (Method::Get, "/agents/loading") => {
             let agent_id = parse_query(url.split('?').nth(1).unwrap_or(""))

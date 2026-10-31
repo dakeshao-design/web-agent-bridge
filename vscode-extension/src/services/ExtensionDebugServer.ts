@@ -15,6 +15,7 @@ Commands:
   POST /debug/new-chat       {"agentId":"example"}  (可选 agentId，缺省用当前活动 Agent)
   POST /debug/open-folder    {"path":"C:/work/project"} (omit path to open dialog)
   POST /debug/send-prompt    {"text":"hello", "agentId":"example"}
+  POST /debug/stop           {"agentId":"example"}  (可选 agentId，缺省用当前活动 Agent)
   GET  /debug/agent-dom?agentId=example
   GET  /debug/conversation?agentId=example
   GET  /debug/bridge-response?agentId=example
@@ -137,6 +138,19 @@ async function handleRequest(
       const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
       await session.sendChat(text, agentId);
       writeJson(response, 200, { ok: true, agentId: agentId || session.getSnapshot().activeAgentId });
+      return;
+    }
+    if (request.method === 'POST' && path === '/debug/stop') {
+      const agentId =
+        typeof body.agentId === 'string' && body.agentId.trim()
+          ? body.agentId.trim()
+          : session.getSnapshot().activeAgentId;
+      await session.stopAgent(agentId);
+      writeJson(response, 200, {
+        ok: true,
+        agentId,
+        status: agentId ? session.getSnapshot().statuses[agentId] : undefined,
+      });
       return;
     }
     if (request.method === 'POST' && path === '/debug/open-folder') {

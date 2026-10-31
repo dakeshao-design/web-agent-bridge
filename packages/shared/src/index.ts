@@ -33,6 +33,10 @@ export {
   buildPromptResendReminder,
 } from './agent/agentModePrompt.js';
 export {
+  getLatestSubstantivePrompt,
+  isShortContinuationPrompt,
+} from './agent/promptContinuation.js';
+export {
   PLAN_TEMPLATE_HOME_PATH,
   buildPlanCreationPrompt,
   createPlanTimestamp,
@@ -117,6 +121,8 @@ export {
   messageIndexSortKey,
   toolExecDedupeKey,
   shouldForceStaleCallTool,
+  shouldAutoContinueAfterStall,
+  STALL_AUTO_CONTINUE_MESSAGE,
   SYSTEM_MARKER,
 } from './agent/fileOperationsFingerprint.js';
 export {

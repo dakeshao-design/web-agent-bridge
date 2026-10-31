@@ -50,6 +50,9 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         case 'send':
           await this.session.sendChat(String(msg.text || ''));
           break;
+        case 'stop':
+          await this.session.stopAgent(this.session.getSnapshot().activeAgentId);
+          break;
         case 'createPlan': {
           const description = String(msg.description || '').trim();
           const snapshot = this.session.getSnapshot();

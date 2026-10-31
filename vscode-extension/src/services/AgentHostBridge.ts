@@ -256,6 +256,10 @@ export class AgentHostBridge implements IAgentBridge {
     await this.host.request('POST', '/agents/fill', { agentId, text });
   }
 
+  async clickStop(agentId: string): Promise<void> {
+    await this.host.request('POST', '/agents/stop', { agentId });
+  }
+
   async newChatSession(agentId: string): Promise<void> {
     await this.host.request('POST', '/agents/new-chat', { agentId });
   }
