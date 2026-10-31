@@ -1,6 +1,6 @@
 [package]
 name = "WABEditor"
-version = "0.3.0"
+version = "0.3.1"
 description = "WABEditor desktop code editor"
 authors = ["WebAgent"]
 edition = "2021"
