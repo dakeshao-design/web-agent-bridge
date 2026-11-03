@@ -86,7 +86,10 @@ export {
   listToolsForSettings,
   isValidToolPermissionMode,
 } from './agent/toolPermissions.js';
-export { buildSelectionMessage, type SelectionMessageInput } from './agent/selectionMessage.js';
+export {
+  buildFilePathReference,
+  type FilePathReferenceInput,
+} from './agent/filePathReference.js';
 export {
   extractCallToolNames,
   findUnknownCallToolNames,

@@ -4,7 +4,8 @@
 
 ## 功能
 
-- 侧栏 WAB 面板：多 Agent、对话、发送当前文件 / 选区
+- 侧栏 WAB 面板：多 Agent、对话
+- 右键 / 快捷键 / 命令面板：填入当前文件或选区路径到 Agent 输入框
 - 静默 Agent Host（WebView2），无需系统浏览器
 - 配置与脚本热重载；危险操作需确认
 
@@ -19,7 +20,7 @@
 2. 在 `%USERPROFILE%\.web-agent-bridge\` 配置 Agent（`config/`、`scripts/`、`skills/`）
 3. 侧栏登录网页 Agent 后即可对话
 
-快捷键：`Ctrl+Alt+F` 发送当前文件，`Ctrl+Alt+S` 发送选区。命令面板前缀：`WAB:`。
+快捷键：`Ctrl+Alt+F` 填入当前文件路径，`Ctrl+Alt+S` 填入选区路径。命令面板前缀：`WAB:`。
 
 ## 设置
 

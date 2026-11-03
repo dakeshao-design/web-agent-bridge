@@ -53,12 +53,12 @@
         "title": "WAB: Reset Config To Defaults"
       },
       {
-        "command": "webAgentBridge.sendCurrentFile",
-        "title": "WAB: Send Current File"
+        "command": "webAgentBridge.fillSelectionToWab",
+        "title": "填入选中到WAB"
       },
       {
-        "command": "webAgentBridge.sendSelection",
-        "title": "WAB: Send Selection"
+        "command": "webAgentBridge.fillCurrentFileToWab",
+        "title": "填入当前文件到WAB"
       },
       {
         "command": "webAgentBridge.sendAgentMode",
@@ -77,16 +77,36 @@
         "title": "WAB: Reload Agents"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "webAgentBridge.fillSelectionToWab",
+          "group": "webAgentBridge@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "webAgentBridge.fillCurrentFileToWab",
+          "group": "webAgentBridge@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "webAgentBridge.fillCurrentFileToWab",
+          "group": "webAgentBridge@1",
+          "when": "explorerResourceIsFolder == false"
+        }
+      ]
+    },
     "keybindings": [
       {
-        "command": "webAgentBridge.sendCurrentFile",
+        "command": "webAgentBridge.fillCurrentFileToWab",
         "key": "ctrl+alt+f",
         "when": "editorTextFocus"
       },
       {
-        "command": "webAgentBridge.sendSelection",
+        "command": "webAgentBridge.fillSelectionToWab",
         "key": "ctrl+alt+s",
-        "when": "editorTextFocus"
+        "when": "editorTextFocus && editorHasSelection"
       }
     ],
     "configuration": {

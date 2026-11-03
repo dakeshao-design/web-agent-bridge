@@ -35,7 +35,7 @@ import {
   STALL_AUTO_CONTINUE_MESSAGE,
   keyArgsFromToolArgs,
   mergeToolPermissions,
-  buildSelectionMessage,
+  buildFilePathReference,
   parseFileLineLimitsFromBridgeScript,
   findLatestCallToolSource,
   POWERSHELL_PROGRESS_INTERVAL_MS,
@@ -127,6 +127,7 @@ export class AgentSession {
   /** call-tool 面板展开结果正文 */
   private callToolDisplayResult = new Map<string, string>();
   private listeners = new Set<UiListener>();
+  private composerFillListeners = new Set<(text: string) => void>();
   private configWatch?: vscode.Disposable;
   private disposed = false;
   /** agentId → 等待进度确认 */
@@ -257,8 +258,17 @@ export class AgentSession {
     return new vscode.Disposable(() => this.listeners.delete(listener));
   }
 
+  onComposerFill(listener: (text: string) => void): vscode.Disposable {
+    this.composerFillListeners.add(listener);
+    return new vscode.Disposable(() => this.composerFillListeners.delete(listener));
+  }
+
   private notify(): void {
     for (const l of this.listeners) l();
+  }
+
+  private notifyComposerFill(text: string): void {
+    for (const l of this.composerFillListeners) l(text);
   }
 
   private lastAgentText(agentId: string): string {
@@ -968,22 +978,36 @@ export class AgentSession {
     return `${base}${USER_MARKER}\n${userText}`;
   }
 
-  async sendCurrentFile(): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showWarningMessage('没有活动编辑器');
+  /** 将路径引用填入侧栏输入框，不写入站点以免与侧栏发送冲突 */
+  private fillSidebarInput(text: string): void {
+    if (!this.hasWorkspace()) {
+      void vscode.window.showWarningMessage(
+        '工作区未打开：请在当前窗口用「文件 → 打开文件夹」打开项目'
+      );
       return;
     }
-    const pathLabel = editor.document.uri.fsPath;
-    const content = editor.document.getText();
-    const msg = `当前文件: ${pathLabel}\n\n\`\`\`\n${content}\n\`\`\``;
-    await this.sendChat(msg);
+    if (!text.trim()) return;
+    this.notifyComposerFill(text);
   }
 
-  async sendSelection(): Promise<void> {
+  private toWorkspaceRelativePath(uri: vscode.Uri): string {
+    return vscode.workspace.asRelativePath(uri, false).replace(/\\/g, '/');
+  }
+
+  async fillCurrentFileToWab(resource?: vscode.Uri): Promise<void> {
+    const uri = resource ?? vscode.window.activeTextEditor?.document.uri;
+    if (!uri || uri.scheme !== 'file') {
+      vscode.window.showWarningMessage('没有可填入的文件');
+      return;
+    }
+    const path = this.toWorkspaceRelativePath(uri);
+    this.fillSidebarInput(buildFilePathReference({ path }));
+  }
+
+  async fillSelectionToWab(): Promise<void> {
     const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showWarningMessage('没有活动编辑器');
+    if (!editor || editor.selection.isEmpty) {
+      vscode.window.showWarningMessage('没有选中内容');
       return;
     }
     const sel = editor.selection;
@@ -995,16 +1019,11 @@ export class AgentSession {
     let startLine = sel.start.line + 1;
     let endLine = sel.end.line + 1;
     // 选到下一行行首时不计入该行
-    if (!sel.isEmpty && sel.end.character === 0 && endLine > startLine) {
+    if (sel.end.character === 0 && endLine > startLine) {
       endLine -= 1;
     }
-    const msg = buildSelectionMessage({
-      path: editor.document.uri.fsPath,
-      startLine,
-      endLine,
-      text,
-    });
-    await this.sendChat(msg);
+    const path = this.toWorkspaceRelativePath(editor.document.uri);
+    this.fillSidebarInput(buildFilePathReference({ path, startLine, endLine }));
   }
 
   async sendAgentMode(explicitAgentId?: string): Promise<void> {

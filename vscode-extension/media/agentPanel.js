@@ -430,6 +430,20 @@
     });
   }
 
+  /** 追加路径引用到侧栏输入框 */
+  function fillComposer(text) {
+    const addition = String(text || '');
+    if (!addition) return;
+    const existing = inputEl.value || '';
+    if (!existing.trim()) {
+      inputEl.value = addition;
+    } else {
+      const trimmedEnd = existing.replace(/\s+$/, '');
+      inputEl.value = trimmedEnd + '\n\n' + addition;
+    }
+    inputEl.focus();
+  }
+
   window.addEventListener('message', function (event) {
     const msg = event.data;
     if (msg && msg.type === 'snapshot') render(msg.data || {});
@@ -439,6 +453,9 @@
     }
     if (msg && msg.type === 'debugDialog') {
       openDebugDialog(msg.kind, msg.title, msg.body);
+    }
+    if (msg && msg.type === 'fillComposer') {
+      fillComposer(msg.text);
     }
     if (msg && msg.type === 'planCreated') {
       planSubmitting = false;

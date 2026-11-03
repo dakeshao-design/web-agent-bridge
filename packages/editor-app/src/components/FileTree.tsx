@@ -311,7 +311,7 @@ export function FileTree({
         items.push({
           type: 'item',
           id: 'send-agent',
-          label: '填入 Agent 输入框',
+          label: '填入当前文件到输入框',
           onClick: () => onSendFileToAgent(entry.path),
         });
       }

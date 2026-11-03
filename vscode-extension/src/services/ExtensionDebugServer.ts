@@ -193,8 +193,8 @@ async function clickAction(action: string, session: AgentSession): Promise<void>
     'open-file': () => openFile(),
     save: () => vscode.commands.executeCommand('workbench.action.files.save'),
     'save-as': () => vscode.commands.executeCommand('workbench.action.files.saveAs'),
-    'send-current-file': () => session.sendCurrentFile(),
-    'send-selection': () => session.sendSelection(),
+    'send-current-file': () => session.fillCurrentFileToWab(),
+    'send-selection': () => session.fillSelectionToWab(),
   };
   const handler = handlers[action];
   if (!handler) throw new Error(`unknown click action: ${action}`);

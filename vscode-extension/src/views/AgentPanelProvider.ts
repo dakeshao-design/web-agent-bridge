@@ -87,12 +87,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
-        case 'sendCurrentFile':
-          await this.session.sendCurrentFile();
-          break;
-        case 'sendSelection':
-          await this.session.sendSelection();
-          break;
         case 'agentMode':
           await this.session.sendAgentMode();
           break;
@@ -156,7 +150,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     });
 
     this.uiSub?.dispose();
-    this.uiSub = this.session.onUiChange(() => this.postSnapshot());
+    this.uiSub = vscode.Disposable.from(
+      this.session.onUiChange(() => this.postSnapshot()),
+      this.session.onComposerFill((text) => {
+        this.view?.show?.(true);
+        this.view?.webview.postMessage({ type: 'fillComposer', text });
+      })
+    );
     this.postSnapshot();
   }
 
@@ -196,8 +196,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     <div class="composer">
       <textarea id="input" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
       <div class="composer-actions">
-        <button data-cmd="sendCurrentFile">当前文件</button>
-        <button data-cmd="sendSelection">选区</button>
         <button data-cmd="newChatSession" title="开启新会话">新会话</button>
         <button type="button" id="planBtn" disabled>计划</button>
         <div class="debug-tools-wrap">
