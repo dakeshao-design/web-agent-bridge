@@ -73,6 +73,7 @@ export {
   INCOMPLETE_CALL_TOOL_CONFIRM_MS,
 } from './agent/incompleteCallTool.js';
 export {
+  OUTSIDE_WORKSPACE_KEY,
   DEFAULT_TOOL_PERMISSIONS,
   mergeToolPermissions,
   getConfiguredPermission,
@@ -86,7 +87,10 @@ export {
   listToolsForSettings,
   isValidToolPermissionMode,
 } from './agent/toolPermissions.js';
-export { buildSelectionMessage, type SelectionMessageInput } from './agent/selectionMessage.js';
+export {
+  buildFilePathReference,
+  type FilePathReferenceInput,
+} from './agent/filePathReference.js';
 export {
   extractCallToolNames,
   findUnknownCallToolNames,

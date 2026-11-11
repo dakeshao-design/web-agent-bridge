@@ -66,8 +66,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   register('webAgentBridge.openAppConfig', () => configService.openAppConfig());
   register('webAgentBridge.openConfigFolder', () => configService.openConfigFolder());
   register('webAgentBridge.resetConfig', () => configService.resetConfigWithConfirm());
-  register('webAgentBridge.sendCurrentFile', () => session?.sendCurrentFile());
-  register('webAgentBridge.sendSelection', () => session?.sendSelection());
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'webAgentBridge.fillSelectionToWab',
+      () => session?.fillSelectionToWab()
+    ),
+    vscode.commands.registerCommand(
+      'webAgentBridge.fillCurrentFileToWab',
+      (uri?: vscode.Uri) => session?.fillCurrentFileToWab(uri)
+    )
+  );
   register('webAgentBridge.sendAgentMode', () => session?.sendAgentMode());
   register('webAgentBridge.newChatSession', () => session?.newChatSession());
   register('webAgentBridge.showLogin', () => session?.showLogin());

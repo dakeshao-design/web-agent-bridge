@@ -270,14 +270,14 @@ export function Editor({
         {
           type: 'item',
           id: 'send-selection',
-          label: '填入选中到 Agent',
+          label: '填入选中到输入框',
           disabled: !hasSel || !onSendSelection,
           onClick: () => onSendSelection?.(info),
         },
         {
           type: 'item',
           id: 'send-file',
-          label: '填入当前文件到 Agent',
+          label: '填入当前文件到输入框',
           disabled: !onSendCurrentFile,
           onClick: () => onSendCurrentFile?.(),
         },

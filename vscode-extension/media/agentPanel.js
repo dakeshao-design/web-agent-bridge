@@ -5,7 +5,6 @@
   const logsEl = document.getElementById('logs');
   const inputEl = document.getElementById('input');
   const hostStatusEl = document.getElementById('hostStatus');
-  const permissionsEl = document.getElementById('permissions');
   const debugToolsBtn = document.getElementById('debugToolsBtn');
   const debugMenu = document.getElementById('debugMenu');
   const debugOverlay = document.getElementById('debugOverlay');
@@ -14,6 +13,12 @@
   const debugDialogPrimary = document.getElementById('debugDialogPrimary');
   const debugDialogClose = document.getElementById('debugDialogClose');
   const debugDialogCloseX = document.getElementById('debugDialogCloseX');
+  const configBtn = document.getElementById('configBtn');
+  const configOverlay = document.getElementById('configOverlay');
+  const configDialogBody = document.getElementById('configDialogBody');
+  const configDialogClose = document.getElementById('configDialogClose');
+  const configDialogCloseX = document.getElementById('configDialogCloseX');
+  const configSaveBtn = document.getElementById('configSaveBtn');
   const planBtn = document.getElementById('planBtn');
   const planOverlay = document.getElementById('planOverlay');
   const planContent = document.getElementById('planContent');
@@ -21,10 +26,14 @@
   const planCreateBtn = document.getElementById('planCreateBtn');
   const planDialogClose = document.getElementById('planDialogClose');
   const planDialogCloseX = document.getElementById('planDialogCloseX');
-  let showPermissions = false;
+  const composerActions = document.getElementById('composerActions');
+  const composerActionsItems = document.getElementById('composerActionsItems');
+  const moreBtn = document.getElementById('moreBtn');
+  const moreMenu = document.getElementById('moreMenu');
   let lastSnapshot = null;
   let debugDialogKind = null;
   let planSubmitting = false;
+  let toolbarOverflowTimer = null;
 
   if (typeof marked !== 'undefined') {
     marked.setOptions({
@@ -128,6 +137,86 @@
     else debugMenu.classList.add('hidden');
   }
 
+  function setMoreMenuOpen(open) {
+    if (!moreMenu || !moreBtn) return;
+    if (open) {
+      moreMenu.classList.remove('hidden');
+      moreBtn.setAttribute('aria-expanded', 'true');
+    } else {
+      moreMenu.classList.add('hidden');
+      moreBtn.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function isDebugMenuOpen() {
+    return !!(debugMenu && !debugMenu.classList.contains('hidden'));
+  }
+
+  function isMoreMenuOpen() {
+    return !!(moreMenu && !moreMenu.classList.contains('hidden'));
+  }
+
+  /** 宽度不足时把右侧按钮收入 ... 菜单，发送始终固定在最右 */
+  function updateToolbarOverflow() {
+    if (!composerActions || !composerActionsItems || !moreBtn || !moreMenu) return;
+    // 弹出菜单打开时跳过，避免菜单引起的宽度抖动把调试工具收进 ...
+    if (isDebugMenuOpen() || isMoreMenuOpen()) return;
+
+    const items = Array.from(composerActionsItems.querySelectorAll(':scope > [data-toolbar-item]')).concat(
+      Array.from(moreMenu.querySelectorAll(':scope > [data-toolbar-item]'))
+    );
+    if (!items.length) return;
+
+    items.forEach(function (el) {
+      if (el.parentElement !== composerActionsItems) composerActionsItems.appendChild(el);
+    });
+    moreBtn.classList.add('hidden');
+
+    const gap = 4;
+    const sendBtn = document.getElementById('sendBtn');
+    const sendWidth = sendBtn ? sendBtn.offsetWidth : 0;
+    const totalWidth = composerActions.clientWidth;
+    let available = Math.max(0, totalWidth - sendWidth - (sendWidth ? gap : 0));
+
+    const widths = items.map(function (el) {
+      return el.offsetWidth;
+    });
+
+    function countFit(avail) {
+      let used = 0;
+      let fit = 0;
+      for (let i = 0; i < items.length; i++) {
+        const w = widths[i] + (fit > 0 ? gap : 0);
+        if (used + w > avail) break;
+        used += w;
+        fit += 1;
+      }
+      return fit;
+    }
+
+    let fitCount = countFit(available);
+    if (fitCount < items.length) {
+      moreBtn.classList.remove('hidden');
+      const moreWidth = moreBtn.offsetWidth;
+      available = Math.max(0, totalWidth - sendWidth - moreWidth - gap * (sendWidth ? 2 : 1));
+      fitCount = countFit(available);
+    }
+
+    for (let i = fitCount; i < items.length; i++) {
+      moreMenu.appendChild(items[i]);
+    }
+
+    if (fitCount >= items.length) moreBtn.classList.add('hidden');
+  }
+
+  function scheduleToolbarOverflow() {
+    if (toolbarOverflowTimer) clearTimeout(toolbarOverflowTimer);
+    toolbarOverflowTimer = setTimeout(function () {
+      toolbarOverflowTimer = null;
+      updateToolbarOverflow();
+    }, 50);
+  }
+
   function closeDebugDialog() {
     debugDialogKind = null;
     if (debugOverlay) debugOverlay.classList.add('hidden');
@@ -172,6 +261,20 @@
     if (debugOverlay) debugOverlay.classList.remove('hidden');
   }
 
+  function isConfigDialogOpen() {
+    return !!(configOverlay && !configOverlay.classList.contains('hidden'));
+  }
+
+  function closeConfigDialog() {
+    if (configOverlay) configOverlay.classList.add('hidden');
+  }
+
+  function openConfigDialog() {
+    if (!lastSnapshot) return;
+    renderPermissions(lastSnapshot);
+    if (configOverlay) configOverlay.classList.remove('hidden');
+  }
+
   if (planBtn) planBtn.addEventListener('click', openPlanDialog);
   if (planDialogClose) planDialogClose.addEventListener('click', closePlanDialog);
   if (planDialogCloseX) planDialogCloseX.addEventListener('click', closePlanDialog);
@@ -189,15 +292,19 @@
     });
   }
 
+  if (configBtn) configBtn.addEventListener('click', openConfigDialog);
+  if (configDialogClose) configDialogClose.addEventListener('click', closeConfigDialog);
+  if (configDialogCloseX) configDialogCloseX.addEventListener('click', closeConfigDialog);
+  if (configSaveBtn) {
+    configSaveBtn.addEventListener('click', function () {
+      if (!lastSnapshot) return;
+      post('saveToolPermissions', { permissions: lastSnapshot.toolPermissions || {} });
+    });
+  }
+
   document.querySelectorAll('[data-cmd]').forEach(function (btn) {
     btn.addEventListener('click', function () {
-      const cmd = btn.getAttribute('data-cmd');
-      if (cmd === 'showPermissions') {
-        showPermissions = !showPermissions;
-        if (lastSnapshot) render(lastSnapshot);
-        return;
-      }
-      post(cmd);
+      post(btn.getAttribute('data-cmd'));
     });
   });
 
@@ -214,6 +321,7 @@
       btn.addEventListener('click', function () {
         const action = btn.getAttribute('data-debug');
         setDebugMenuOpen(false);
+        setMoreMenuOpen(false);
         if (action === 'agentModePrompt') post('getAgentModePrompt');
         else if (action === 'lastCallTool') post('getLastCallTool');
         else if (action === 'stopTerminal') post('killTerminal');
@@ -221,9 +329,43 @@
     });
   }
 
+  if (moreBtn) {
+    moreBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const open = moreMenu && moreMenu.classList.contains('hidden');
+      setDebugMenuOpen(false);
+      setMoreMenuOpen(!!open);
+    });
+  }
+
+  if (moreMenu) {
+    moreMenu.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      // 收入菜单的普通按钮点击后关闭；调试工具保留子菜单
+      if (target.closest('#debugToolsBtn')) return;
+      if (target.closest('[data-debug]')) return;
+      if (target.closest('[data-toolbar-item]')) setMoreMenuOpen(false);
+    });
+  }
+
   document.addEventListener('click', function () {
+    const wasOpen = isDebugMenuOpen() || isMoreMenuOpen();
     setDebugMenuOpen(false);
+    setMoreMenuOpen(false);
+    if (wasOpen) scheduleToolbarOverflow();
   });
+
+  if (composerActions && typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(function () {
+      scheduleToolbarOverflow();
+    });
+    ro.observe(composerActions);
+  } else {
+    window.addEventListener('resize', scheduleToolbarOverflow);
+  }
+  scheduleToolbarOverflow();
 
   if (debugDialogClose) {
     debugDialogClose.addEventListener('click', closeDebugDialog);
@@ -265,19 +407,13 @@
   });
 
   function renderPermissions(snapshot) {
-    if (!permissionsEl) return;
-    if (!showPermissions) {
-      permissionsEl.classList.add('hidden');
-      permissionsEl.innerHTML = '';
-      return;
-    }
-    permissionsEl.classList.remove('hidden');
-    permissionsEl.innerHTML = '';
+    if (!configDialogBody) return;
+    configDialogBody.innerHTML = '';
 
-    const title = document.createElement('div');
-    title.className = 'perm-title';
-    title.textContent = '工具权限（允许 / 询问 / 禁止）';
-    permissionsEl.appendChild(title);
+    const hint = document.createElement('div');
+    hint.className = 'perm-hint';
+    hint.textContent = '允许 / 询问 / 禁止';
+    configDialogBody.appendChild(hint);
 
     const perms = snapshot.toolPermissions || {};
     const tools = snapshot.toolsForSettings || [];
@@ -287,7 +423,7 @@
 
       const name = document.createElement('div');
       name.className = 'perm-name';
-      name.textContent = tool.name;
+      name.textContent = tool.label || tool.name;
 
       const desc = document.createElement('div');
       desc.className = 'perm-desc';
@@ -295,7 +431,8 @@
 
       const modes = document.createElement('div');
       modes.className = 'perm-modes';
-      const current = perms[tool.name] || 'allow';
+      const current =
+        perms[tool.name] || (tool.name === 'outside_workspace' ? 'ask' : 'allow');
       ['allow', 'ask', 'deny'].forEach(function (mode) {
         const label = document.createElement('label');
         const input = document.createElement('input');
@@ -316,25 +453,8 @@
       row.appendChild(name);
       row.appendChild(desc);
       row.appendChild(modes);
-      permissionsEl.appendChild(row);
+      configDialogBody.appendChild(row);
     });
-
-    const actions = document.createElement('div');
-    actions.className = 'perm-actions';
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = '保存权限';
-    saveBtn.addEventListener('click', function () {
-      post('saveToolPermissions', { permissions: snapshot.toolPermissions || {} });
-    });
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '关闭';
-    closeBtn.addEventListener('click', function () {
-      showPermissions = false;
-      if (lastSnapshot) render(lastSnapshot);
-    });
-    actions.appendChild(saveBtn);
-    actions.appendChild(closeBtn);
-    permissionsEl.appendChild(actions);
   }
 
   function render(snapshot) {
@@ -378,6 +498,7 @@
         : undefined;
     const busy = activeSt === 'sending' || activeSt === 'waiting';
     const pendingInit = !activeSt && !!snapshot.hostReady;
+    const prevSendText = sendBtn.textContent;
     if (busy && activeId) {
       sendBtn.dataset.mode = 'stop';
       sendBtn.textContent = '停止';
@@ -389,8 +510,10 @@
     }
     if (planBtn) planBtn.disabled = !activeId || busy || pendingInit || !snapshot.workspaceRoot;
     updatePlanCreateButton();
+    // 发送/停止文案宽度变化时重算溢出
+    if (sendBtn.textContent !== prevSendText) scheduleToolbarOverflow();
 
-    renderPermissions(snapshot);
+    if (isConfigDialogOpen()) renderPermissions(snapshot);
 
     const openCallToolKeys = getOpenCallToolKeys();
     chatEl.innerHTML = '';
@@ -430,15 +553,28 @@
     });
   }
 
+  /** 追加路径引用到侧栏输入框 */
+  function fillComposer(text) {
+    const addition = String(text || '');
+    if (!addition) return;
+    const existing = inputEl.value || '';
+    if (!existing.trim()) {
+      inputEl.value = addition;
+    } else {
+      const trimmedEnd = existing.replace(/\s+$/, '');
+      inputEl.value = trimmedEnd + '\n\n' + addition;
+    }
+    inputEl.focus();
+  }
+
   window.addEventListener('message', function (event) {
     const msg = event.data;
     if (msg && msg.type === 'snapshot') render(msg.data || {});
-    if (msg && msg.type === 'togglePermissions') {
-      showPermissions = !!msg.show;
-      if (lastSnapshot) render(lastSnapshot);
-    }
     if (msg && msg.type === 'debugDialog') {
       openDebugDialog(msg.kind, msg.title, msg.body);
+    }
+    if (msg && msg.type === 'fillComposer') {
+      fillComposer(msg.text);
     }
     if (msg && msg.type === 'planCreated') {
       planSubmitting = false;

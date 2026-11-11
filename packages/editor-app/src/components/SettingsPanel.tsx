@@ -47,10 +47,10 @@ export function SettingsPanel({
             </thead>
             <tbody>
               {tools.map((tool) => {
-                const mode = permissions[tool.name] ?? 'allow';
+                const mode = permissions[tool.name] ?? (tool.name === 'outside_workspace' ? 'ask' : 'allow');
                 return (
                   <tr key={tool.name}>
-                    <td className="settings-tool-name">{tool.name}</td>
+                    <td className="settings-tool-name">{tool.label || tool.name}</td>
                     <td className="settings-tool-desc">{tool.description}</td>
                     <td className="settings-tool-mode">
                       {MODE_LABELS.map((opt) => (

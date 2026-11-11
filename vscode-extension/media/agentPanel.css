@@ -23,6 +23,7 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  overflow-x: hidden;
 }
 .agent-tabs-bar {
   flex-shrink: 0;
@@ -88,13 +89,6 @@ html, body {
 }
 @keyframes tab-spin {
   to { transform: rotate(360deg); }
-}
-.panel-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding-top: 2px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 button {
   border: 1px solid var(--border);
@@ -285,8 +279,85 @@ textarea {
 }
 .composer-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+.composer-actions-items {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  /* 不用 overflow:hidden，避免调试工具菜单被裁切 */
+}
+.composer-actions-items > [data-toolbar-item] {
+  flex-shrink: 0;
+}
+.composer-actions-end {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.more-wrap {
+  position: relative;
+  display: inline-block;
+}
+.more-btn.hidden {
+  display: none;
+}
+.more-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  min-width: 120px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  padding: 2px 0;
+}
+.more-menu.hidden {
+  display: none;
+}
+.more-menu > [data-toolbar-item] {
+  display: block;
+  width: 100%;
+}
+.more-menu > button[data-toolbar-item],
+.more-menu .debug-tools-wrap > button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--fg);
+}
+.more-menu > button[data-toolbar-item]:hover,
+.more-menu .debug-tools-wrap > button:hover {
+  background: var(--btn);
+  color: var(--btn-fg);
+}
+.more-menu .debug-tools-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.more-menu .debug-menu {
+  right: 0;
+  left: auto;
+  bottom: calc(100% + 4px);
+  min-width: 100%;
 }
 .logs {
   max-height: 120px;
@@ -299,16 +370,18 @@ textarea {
 .log-error { color: #e66; }
 .log-applied { color: #6a6; }
 
-.permissions {
-  border-bottom: 1px solid var(--border);
-  max-height: 45vh;
-  overflow: auto;
-  padding: 8px;
-  background: rgba(0, 0, 0, 0.15);
+.config-dialog {
+  width: min(560px, 100%);
 }
-.permissions.hidden { display: none; }
-.perm-title {
-  font-weight: 600;
+.config-dialog-body {
+  padding: 10px;
+  overflow: auto;
+  flex: 1;
+  min-height: 160px;
+  max-height: 55vh;
+}
+.perm-hint {
+  color: var(--muted);
   margin-bottom: 8px;
 }
 .perm-row {
@@ -339,11 +412,6 @@ textarea {
   gap: 4px;
   cursor: pointer;
 }
-.perm-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
 
 .debug-tools-wrap {
   position: relative;
@@ -351,7 +419,9 @@ textarea {
 }
 .debug-menu {
   position: absolute;
-  left: 0;
+  /* 右对齐向上展开，避免贴发送时撑出横向滚动触发溢出重算 */
+  right: 0;
+  left: auto;
   bottom: calc(100% + 4px);
   min-width: 160px;
   background: var(--bg);

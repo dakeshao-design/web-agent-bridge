@@ -26,7 +26,7 @@ import {
   buildDeniedToolResult,
   buildPermissionAskMessage,
   mergeToolPermissions,
-  buildSelectionMessage,
+  buildFilePathReference,
   parseFileLineLimitsFromBridgeScript,
   extractCallToolSourceBlocks,
   findLatestCallToolSource,
@@ -1589,31 +1589,21 @@ export default function App() {
     }
   }, [content]);
 
-  const buildFileMessage = useCallback(
-    (text: string, absolutePath?: string | null) => {
-      const path = absolutePath ?? filePath;
-      const displayPath = path ? toRelativePath(path, workspaceRoot) : '';
-      const pathPart = displayPath ? `文件: ${displayPath}\n\n` : '';
-      return `${pathPart}\`\`\`\n${text}\n\`\`\``;
-    },
-    [filePath, workspaceRoot]
-  );
-
   const handleSendCurrentFile = useCallback(async () => {
-    if (!workspaceRoot || !activeAgentId) return;
-    await logAndFillAgent(buildFileMessage(content), '填入当前文件');
-  }, [workspaceRoot, activeAgentId, content, buildFileMessage, logAndFillAgent]);
+    if (!workspaceRoot || !activeAgentId || !filePath) return;
+    const displayPath = toRelativePath(filePath, workspaceRoot);
+    await logAndFillAgent(buildFilePathReference({ path: displayPath }), '填入当前文件');
+  }, [workspaceRoot, activeAgentId, filePath, logAndFillAgent]);
 
   const handleSendSelection = useCallback(
     async (override?: EditorSelectionInfo) => {
       const info = override ?? selection;
-      if (!workspaceRoot || !activeAgentId || !info.text) return;
-      const displayPath = filePath ? toRelativePath(filePath, workspaceRoot) : '';
-      const msg = buildSelectionMessage({
-        path: displayPath || null,
+      if (!workspaceRoot || !activeAgentId || !info.text || !filePath) return;
+      const displayPath = toRelativePath(filePath, workspaceRoot);
+      const msg = buildFilePathReference({
+        path: displayPath,
         startLine: info.startLine,
         endLine: info.endLine,
-        text: info.text,
       });
       await logAndFillAgent(msg, '填入选中内容');
     },
@@ -1634,18 +1624,10 @@ export default function App() {
         await message('请先选择一个 Agent。', { title: '提示', kind: 'warning' });
         return;
       }
-      try {
-        const fileContent = await fileService.readFile(path);
-        await logAndFillAgent(buildFileMessage(fileContent, path), '填入文件到 Agent');
-      } catch (err) {
-        console.error(err);
-        await message('无法读取该文件，可能不是文本文件。', {
-          title: '填入失败',
-          kind: 'error',
-        });
-      }
+      const displayPath = toRelativePath(path, workspaceRoot);
+      await logAndFillAgent(buildFilePathReference({ path: displayPath }), '填入当前文件');
     },
-    [workspaceRoot, activeAgentId, buildFileMessage, logAndFillAgent]
+    [workspaceRoot, activeAgentId, logAndFillAgent]
   );
 
   const handleDeletePath = useCallback(
@@ -1714,6 +1696,7 @@ export default function App() {
       settingsOpenRef.current = false;
       setSettingsOpen(false);
       void syncAgentWebviewVisibility();
+      await message('工具权限已保存，将在新会话中应用', { title: '设置', kind: 'info' });
     } catch (err) {
       await message(`保存失败：${String(err)}`, { title: '设置', kind: 'error' });
     } finally {
@@ -2125,12 +2108,6 @@ export default function App() {
         </div>
         <div className="menu-group">
           <span className="menu-label">Agent</span>
-          <button onClick={handleSendCurrentFile} disabled={!workspaceRoot}>
-            填入当前文件
-          </button>
-          <button onClick={() => handleSendSelection()} disabled={!workspaceRoot}>
-            填入选中 (Ctrl+Shift+A)
-          </button>
           <button
             onClick={() => void handleNewChatSession()}
             disabled={!workspaceRoot}
