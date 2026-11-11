@@ -4,13 +4,19 @@ import { AGENT_TOOLS, getToolByAction, getToolByName } from '../tools/registry.j
 import { fileActionToToolName } from './toolResultMessage.js';
 import { SYSTEM_MARKER } from './fileOperationsFingerprint.js';
 
-/** 默认权限：仅 run_powershell 为 ask，其余 allow */
-export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionsConfig = Object.fromEntries(
-  AGENT_TOOLS.map((tool) => [
-    tool.name,
-    tool.name === 'run_powershell' ? ('ask' as const) : ('allow' as const),
-  ])
-);
+/** 工作区外文件访问权限的配置键 */
+export const OUTSIDE_WORKSPACE_KEY = 'outside_workspace';
+
+/** 默认权限：run_powershell 与工作区外为 ask，其余 allow */
+export const DEFAULT_TOOL_PERMISSIONS: ToolPermissionsConfig = {
+  ...Object.fromEntries(
+    AGENT_TOOLS.map((tool) => [
+      tool.name,
+      tool.name === 'run_powershell' ? ('ask' as const) : ('allow' as const),
+    ])
+  ),
+  [OUTSIDE_WORKSPACE_KEY]: 'ask',
+};
 
 export function mergeToolPermissions(
   partial?: ToolPermissionsConfig | null
@@ -25,7 +31,7 @@ export function getConfiguredPermission(
   const merged = mergeToolPermissions(config);
   const mode = merged[toolName];
   if (mode === 'allow' || mode === 'ask' || mode === 'deny') return mode;
-  return toolName === 'run_powershell' ? 'ask' : 'allow';
+  return toolName === 'run_powershell' || toolName === OUTSIDE_WORKSPACE_KEY ? 'ask' : 'allow';
 }
 
 function normalizePathForCompare(p: string): string {
@@ -55,9 +61,9 @@ export function resolveToolNameForOperation(op: FileOperation): string {
 }
 
 /**
- * 有效权限：配置为 allow 且目标路径在工作区外时降为 ask。
- * run_powershell 无路径，不降级。
- * options.skipOutsideWorkspaceDowngrade 可关闭区外降级。
+ * 有效权限：工具为 allow 且目标在工作区外时，改用 outside_workspace 配置。
+ * run_powershell 无路径，不套用区外规则。
+ * options.skipOutsideWorkspaceDowngrade 可跳过区外检查。
  */
 export function resolveEffectivePermission(
   toolName: string,
@@ -80,7 +86,9 @@ export function resolveEffectivePermission(
 
   for (const raw of targets) {
     const abs = resolvePath ? resolvePath(raw) : raw;
-    if (!isPathInsideWorkspace(abs, root)) return 'ask';
+    if (!isPathInsideWorkspace(abs, root)) {
+      return getConfiguredPermission(OUTSIDE_WORKSPACE_KEY, config);
+    }
   }
   return 'allow';
 }
@@ -116,11 +124,22 @@ export function listToolsForPrompt(config?: ToolPermissionsConfig | null) {
   return AGENT_TOOLS.filter((tool) => getConfiguredPermission(tool.name, merged) !== 'deny');
 }
 
-export function listToolsForSettings(): Array<{ name: string; description: string }> {
-  return AGENT_TOOLS.map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-  }));
+export function listToolsForSettings(): Array<{
+  name: string;
+  description: string;
+  label?: string;
+}> {
+  return [
+    ...AGENT_TOOLS.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+    })),
+    {
+      name: OUTSIDE_WORKSPACE_KEY,
+      label: '工作区外文件',
+      description: '访问工作区根目录之外的文件或路径',
+    },
+  ];
 }
 
 export function isValidToolPermissionMode(value: unknown): value is ToolPermissionMode {

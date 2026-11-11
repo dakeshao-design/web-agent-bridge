@@ -73,6 +73,7 @@ export {
   INCOMPLETE_CALL_TOOL_CONFIRM_MS,
 } from './agent/incompleteCallTool.js';
 export {
+  OUTSIDE_WORKSPACE_KEY,
   DEFAULT_TOOL_PERMISSIONS,
   mergeToolPermissions,
   getConfiguredPermission,

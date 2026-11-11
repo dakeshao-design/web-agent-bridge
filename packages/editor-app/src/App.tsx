@@ -1696,6 +1696,7 @@ export default function App() {
       settingsOpenRef.current = false;
       setSettingsOpen(false);
       void syncAgentWebviewVisibility();
+      await message('工具权限已保存，将在新会话中应用', { title: '设置', kind: 'info' });
     } catch (err) {
       await message(`保存失败：${String(err)}`, { title: '设置', kind: 'error' });
     } finally {

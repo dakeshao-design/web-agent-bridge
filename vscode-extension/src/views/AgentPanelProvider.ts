@@ -128,9 +128,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         case 'reload':
           await this.session.reloadAgents();
           break;
-        case 'openConfig':
-          await vscode.commands.executeCommand('webAgentBridge.openAgentsConfig');
-          break;
         case 'setToolPermission':
           this.session.setToolPermissionDraft(
             String(msg.toolName || ''),
@@ -141,10 +138,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
           await this.session.saveToolPermissions(
             (msg.permissions || {}) as Record<string, 'allow' | 'ask' | 'deny'>
           );
-          void vscode.window.showInformationMessage('工具权限已保存');
-          break;
-        case 'showPermissions':
-          this.view?.webview.postMessage({ type: 'togglePermissions', show: true });
+          void vscode.window.showInformationMessage('工具权限已保存，将在新会话中应用');
           break;
       }
     });
@@ -191,28 +185,32 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div id="tabs" class="tabs" role="tablist"></div>
     </div>
     <div id="hostStatus" class="host-status"></div>
-    <div id="permissions" class="permissions hidden"></div>
     <div id="chat" class="chat"></div>
     <div class="composer">
       <textarea id="input" rows="3" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
-      <div class="composer-actions">
-        <button data-cmd="newChatSession" title="开启新会话">新会话</button>
-        <button type="button" id="planBtn" disabled>计划</button>
-        <div class="debug-tools-wrap">
-          <button type="button" id="debugToolsBtn" title="调试工具">调试工具</button>
-          <div id="debugMenu" class="debug-menu hidden" role="menu">
-            <button type="button" data-debug="agentModePrompt" role="menuitem">Agent mode promet</button>
-            <button type="button" data-debug="lastCallTool" role="menuitem">Last call-tool</button>
-            <button type="button" data-debug="stopTerminal" role="menuitem">Stop Terminal</button>
+      <div class="composer-actions" id="composerActions">
+        <div class="composer-actions-items" id="composerActionsItems">
+          <button data-cmd="newChatSession" title="开启新会话" data-toolbar-item>新会话</button>
+          <button type="button" id="planBtn" disabled data-toolbar-item>计划</button>
+          <button data-cmd="reload" title="重新加载" data-toolbar-item>刷新</button>
+          <button data-cmd="showLogin" title="打开登录窗" data-toolbar-item>登录</button>
+          <button type="button" id="configBtn" title="工具权限" data-toolbar-item>配置</button>
+          <div class="debug-tools-wrap" data-toolbar-item>
+            <button type="button" id="debugToolsBtn" title="调试工具">调试工具</button>
+            <div id="debugMenu" class="debug-menu hidden" role="menu">
+              <button type="button" data-debug="agentModePrompt" role="menuitem">Agent mode promet</button>
+              <button type="button" data-debug="lastCallTool" role="menuitem">Last call-tool</button>
+              <button type="button" data-debug="stopTerminal" role="menuitem">Stop Terminal</button>
+            </div>
           </div>
         </div>
-        <button id="sendBtn" class="primary" disabled>发送</button>
-      </div>
-      <div class="panel-actions">
-        <button data-cmd="showLogin" title="打开登录窗">登录</button>
-        <button data-cmd="openConfig" title="打开桥接脚本目录">配置</button>
-        <button data-cmd="showPermissions" title="工具权限">权限</button>
-        <button data-cmd="reload" title="重新加载">刷新</button>
+        <div class="composer-actions-end">
+          <div class="more-wrap">
+            <button type="button" id="moreBtn" class="more-btn hidden" title="更多" aria-haspopup="menu" aria-expanded="false">...</button>
+            <div id="moreMenu" class="more-menu hidden" role="menu"></div>
+          </div>
+          <button id="sendBtn" class="primary" disabled>发送</button>
+        </div>
       </div>
     </div>
     <div id="logs" class="logs"></div>
@@ -227,6 +225,19 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       <div class="debug-dialog-footer">
         <button type="button" id="debugDialogClose">Close</button>
         <button type="button" id="debugDialogPrimary" class="primary">Send</button>
+      </div>
+    </div>
+  </div>
+  <div id="configOverlay" class="debug-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="configDialogTitle">
+    <div class="debug-dialog config-dialog">
+      <div class="debug-dialog-header">
+        <h2 id="configDialogTitle">工具权限</h2>
+        <button type="button" id="configDialogCloseX" aria-label="关闭">×</button>
+      </div>
+      <div id="configDialogBody" class="config-dialog-body"></div>
+      <div class="debug-dialog-footer">
+        <button type="button" id="configDialogClose">关闭</button>
+        <button type="button" id="configSaveBtn" class="primary">保存权限</button>
       </div>
     </div>
   </div>

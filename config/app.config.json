@@ -28,6 +28,7 @@
     "copy_path": "allow",
     "ls": "allow",
     "grep": "allow",
-    "run_powershell": "ask"
+    "run_powershell": "ask",
+    "outside_workspace": "ask"
   }
 }
