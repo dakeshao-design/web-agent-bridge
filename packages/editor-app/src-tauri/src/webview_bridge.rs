@@ -113,7 +113,8 @@ fn agent_webview_alive(app: &AppHandle, label: &str) -> bool {
 
 /// 工作区右下角露出数 px，避免完全离屏被当成 hidden 节流
 fn silent_peek_position(win: &tauri::WebviewWindow) -> PhysicalPosition<i32> {
-    const PEEK_PX: i32 = 4;
+    // 1px 仍在屏内，降低可见度；完全离屏会节流
+    const PEEK_PX: i32 = 1;
     let monitor = win
         .current_monitor()
         .ok()
@@ -130,7 +131,7 @@ fn silent_peek_position(win: &tauri::WebviewWindow) -> PhysicalPosition<i32> {
     }
 }
 
-/// Host 静默：屏内窥视 show。hide 或完全离屏会导致 WebView2 节流
+/// Host 静默：先钉 peek 再 show。hide 或完全离屏会导致 WebView2 节流
 fn place_host_window_silent(win: &tauri::WebviewWindow) -> Result<(), String> {
     let _ = win.set_skip_taskbar(true);
     let _ = win.set_always_on_bottom(true);
@@ -138,8 +139,9 @@ fn place_host_window_silent(win: &tauri::WebviewWindow) -> Result<(), String> {
     // 保持合理尺寸，避免站点在极小 viewport 下停更
     win.set_size(LogicalSize::new(960.0, 720.0))
         .map_err(|e| e.to_string())?;
-    let pos = silent_peek_position(win);
-    win.set_position(pos).map_err(|e| e.to_string())?;
+    // 必须先定位再 show，避免默认位置闪一下
+    win.set_position(silent_peek_position(win))
+        .map_err(|e| e.to_string())?;
     win.show().map_err(|e| e.to_string())?;
     // show 后位置可能被拉回，再钉一次且不抢焦点
     let _ = win.set_position(silent_peek_position(win));
@@ -1707,8 +1709,11 @@ pub async fn create_agent_webview(
             )
             .title(format!("WAB · {}", agent_id_for_title))
             .inner_size(width, height)
-            .center()
+            // 不 center：创建时不可见，peek 定位后再 show，避免居中闪屏
             .visible(false)
+            .focused(false)
+            .skip_taskbar(true)
+            .always_on_bottom(true)
             .closable(false)
             .devtools(should_enable_devtools())
             .initialization_script(&init_for_create)

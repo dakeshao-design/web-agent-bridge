@@ -115,10 +115,12 @@ pub fn run() {
             );
             if agent_host {
                 window.set_title("WABEditor Host").ok();
+                // 配置已 visible:false，再 hide 兜底
                 let _ = window.hide();
                 start_host_server(app.handle().clone());
             } else {
                 window.set_title("WABEditor").ok();
+                let _ = window.show();
                 #[cfg(debug_assertions)]
                 start_debug_server(app.handle().clone());
             }
