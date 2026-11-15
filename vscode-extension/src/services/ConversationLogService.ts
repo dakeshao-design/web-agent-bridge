@@ -40,6 +40,12 @@ export class ConversationLogService {
   private readonly appendQueues = new Map<string, Promise<void>>();
   private readonly lastChatEntry = new Map<string, { role: 'user' | 'agent'; content: string }>();
   private readonly lastBridgeEntry = new Map<string, { role: LogRole; content: string }>();
+  /** 流式生长中待落盘的最新正文 */
+  private readonly pendingGrowing = new Map<
+    string,
+    { role: 'user' | 'agent'; agentName: string; content: string }
+  >();
+  private readonly growingFlushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly getWorkspaceRoot: () => string) {}
 
@@ -58,11 +64,15 @@ export class ConversationLogService {
       chat: path.join(dir, names.chat),
       runtime: path.join(dir, names.runtime),
     });
+    this.clearGrowingState(agentId);
     this.lastChatEntry.delete(agentId);
     this.lastBridgeEntry.delete(agentId);
   }
 
   resetTargets(): void {
+    for (const agentId of this.growingFlushTimers.keys()) {
+      this.clearGrowingState(agentId);
+    }
     this.sessions.clear();
     this.lastChatEntry.clear();
     this.lastBridgeEntry.clear();
@@ -72,12 +82,50 @@ export class ConversationLogService {
     role: 'user' | 'agent',
     agentId: string,
     agentName: string,
-    content: string
+    content: string,
+    opts?: { growing?: boolean }
   ): Promise<void> {
     const previous = this.lastChatEntry.get(agentId);
     if (previous?.role === role && previous.content.trim() === content.trim()) return;
+
+    // 仅流式生长节流；稳定定稿与工具回传立即写完整正文
+    if (opts?.growing === true) {
+      this.pendingGrowing.set(agentId, { role, agentName, content });
+      this.scheduleGrowingFlush(agentId);
+      return;
+    }
+
+    this.clearGrowingState(agentId);
     await this.addEntry(role, agentId, agentName, content);
     this.lastChatEntry.set(agentId, { role, content });
+  }
+
+  private scheduleGrowingFlush(agentId: string): void {
+    if (this.growingFlushTimers.has(agentId)) return;
+    this.growingFlushTimers.set(
+      agentId,
+      setTimeout(() => {
+        this.growingFlushTimers.delete(agentId);
+        const pending = this.pendingGrowing.get(agentId);
+        if (!pending) return;
+        this.pendingGrowing.delete(agentId);
+        void this.addEntry(pending.role, agentId, pending.agentName, pending.content)
+          .then(() => {
+            this.lastChatEntry.set(agentId, {
+              role: pending.role,
+              content: pending.content,
+            });
+          })
+          .catch(() => undefined);
+      }, 1000)
+    );
+  }
+
+  private clearGrowingState(agentId: string): void {
+    const timer = this.growingFlushTimers.get(agentId);
+    if (timer) clearTimeout(timer);
+    this.growingFlushTimers.delete(agentId);
+    this.pendingGrowing.delete(agentId);
   }
 
   async addBridgeEntry(
