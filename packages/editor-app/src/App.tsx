@@ -196,6 +196,8 @@ export default function App() {
       }
     >()
   );
+  /** 上一轮 waiting 轮询未完成则跳过本拍 */
+  const waitingPollInFlightRef = useRef(false);
   /** 首次建站：输入框未就绪前保持 waiting */
   const composerInitPendingRef = useRef(new Set<string>());
   const composerInitGenRef = useRef(new Map<string, number>());
@@ -1037,103 +1039,119 @@ export default function App() {
     handleAgentResponseRef.current = handleAgentResponse;
   }, [handleAgentResponse]);
 
-  // waiting 图标：composerInit / loading / poll 变化 3s / 本地工具 / PS 待确认
+  // waiting 图标：仅活跃 agent；上一轮未完成则跳过
   useEffect(() => {
     const timer = window.setInterval(() => {
       void (async () => {
-        const statuses = agentStatusesRef.current;
-        const ids = new Set<string>([
-          ...agentsRef.current.map((a) => a.id),
-          ...Object.keys(statuses),
-        ]);
-        for (const agentId of ids) {
-          const status = statuses[agentId];
-          if (status === 'error' || status === 'sending') continue;
+        if (waitingPollInFlightRef.current) return;
+        waitingPollInFlightRef.current = true;
+        try {
+          const statuses = agentStatusesRef.current;
+          const ids = new Set<string>([
+            ...agentsRef.current.map((a) => a.id),
+            ...Object.keys(statuses),
+          ]);
+          for (const agentId of ids) {
+            const status = statuses[agentId];
+            if (status === 'error' || status === 'sending') continue;
 
-          if (composerInitPendingRef.current.has(agentId)) {
-            setAgentStatus(agentId, 'waiting');
-            continue;
-          }
+            const hasInflight = [...inflightToolOpsRef.current].some((k) =>
+              k.startsWith(`${agentId}:`)
+            );
+            const hasPendingPs = pendingPowershellDecisionRef.current.has(agentId);
+            const initPending = composerInitPendingRef.current.has(agentId);
+            if (
+              status !== 'waiting' &&
+              !hasInflight &&
+              !hasPendingPs &&
+              !initPending
+            ) {
+              continue;
+            }
 
-          const hasInflight = [...inflightToolOpsRef.current].some((k) =>
-            k.startsWith(`${agentId}:`)
-          );
-          const hasPendingPs = pendingPowershellDecisionRef.current.has(agentId);
-          if (hasInflight || hasPendingPs) {
-            setAgentStatus(agentId, 'waiting');
-            continue;
-          }
+            if (initPending) {
+              setAgentStatus(agentId, 'waiting');
+              continue;
+            }
 
-          const snap = await agentBridge.getPollSnapshot(agentId);
+            if (hasInflight || hasPendingPs) {
+              setAgentStatus(agentId, 'waiting');
+              continue;
+            }
 
-          const fingerprint = pollSnapshotFingerprint(snap);
-          let watch = waitingWatchRef.current.get(agentId);
-          if (!watch) {
-            watch = {
-              fingerprint,
-              changeSince: snap.loading ? Date.now() : Date.now() - 3000,
-            };
-            waitingWatchRef.current.set(agentId, watch);
-          } else if (fingerprint !== watch.fingerprint) {
-            watch.fingerprint = fingerprint;
-            watch.changeSince = Date.now();
-          }
+            const snap = await agentBridge.getPollSnapshot(agentId);
 
-          if (snap.loading || Date.now() - watch.changeSince < 3000) {
-            setAgentStatus(agentId, 'waiting');
-          } else if (status === 'waiting') {
-            // waiting 结束：Host 模式由扩展兜底，桌面自行强制
-            if (!agentHostModeRef.current) {
-              const messageIndex = snap.lastAgent?.index?.trim() ?? '';
-              const attemptKey = `${agentId}\n${messageIndex}`;
-              const alreadyProcessed =
-                messageIndex !== '' &&
-                [...processedToolOpsRef.current].some((k) =>
-                  k.startsWith(`${agentId}\n${messageIndex}\n`)
-                );
-              if (
-                shouldForceStaleCallTool({
-                  loading: snap.loading,
-                  lastAgentIndex: snap.lastAgent?.index,
-                  lastUserIndex: snap.lastUser?.index,
-                  agentText: snap.lastAgent?.text,
-                  alreadyAttempted:
-                    alreadyProcessed || staleForceAttemptedRef.current.has(attemptKey),
-                })
-              ) {
-                const text = snap.lastAgent?.text?.trim() ?? '';
-                if (text) {
-                  staleForceAttemptedRef.current.add(attemptKey);
-                  const callToolParser = callToolParserRef.current;
-                  const ops = [
-                    ...(parserRef.current?.parse(text) ?? []),
-                    ...(callToolParser?.parse(text) ?? []),
-                  ];
-                  const opsFp = fileOperationsFingerprint(ops);
-                  processedToolOpsRef.current.add(
-                    toolExecDedupeKey(agentId, messageIndex, opsFp)
+            const fingerprint = pollSnapshotFingerprint(snap);
+            let watch = waitingWatchRef.current.get(agentId);
+            if (!watch) {
+              watch = {
+                fingerprint,
+                changeSince: snap.loading ? Date.now() : Date.now() - 3000,
+              };
+              waitingWatchRef.current.set(agentId, watch);
+            } else if (fingerprint !== watch.fingerprint) {
+              watch.fingerprint = fingerprint;
+              watch.changeSince = Date.now();
+            }
+
+            if (snap.loading || Date.now() - watch.changeSince < 3000) {
+              setAgentStatus(agentId, 'waiting');
+            } else if (status === 'waiting') {
+              // waiting 结束：Host 模式由扩展兜底，桌面自行强制
+              if (!agentHostModeRef.current) {
+                const messageIndex = snap.lastAgent?.index?.trim() ?? '';
+                const attemptKey = `${agentId}\n${messageIndex}`;
+                const alreadyProcessed =
+                  messageIndex !== '' &&
+                  [...processedToolOpsRef.current].some((k) =>
+                    k.startsWith(`${agentId}\n${messageIndex}\n`)
                   );
-                  const prev = lastToolMessageIndexRef.current.get(agentId) ?? '';
-                  if (messageIndex && compareMessageIndex(messageIndex, prev) > 0) {
-                    lastToolMessageIndexRef.current.set(agentId, messageIndex);
+                if (
+                  shouldForceStaleCallTool({
+                    loading: snap.loading,
+                    lastAgentIndex: snap.lastAgent?.index,
+                    lastUserIndex: snap.lastUser?.index,
+                    agentText: snap.lastAgent?.text,
+                    alreadyAttempted:
+                      alreadyProcessed || staleForceAttemptedRef.current.has(attemptKey),
+                  })
+                ) {
+                  const text = snap.lastAgent?.text?.trim() ?? '';
+                  if (text) {
+                    staleForceAttemptedRef.current.add(attemptKey);
+                    const callToolParser = callToolParserRef.current;
+                    const ops = [
+                      ...(parserRef.current?.parse(text) ?? []),
+                      ...(callToolParser?.parse(text) ?? []),
+                    ];
+                    const opsFp = fileOperationsFingerprint(ops);
+                    processedToolOpsRef.current.add(
+                      toolExecDedupeKey(agentId, messageIndex, opsFp)
+                    );
+                    const prev = lastToolMessageIndexRef.current.get(agentId) ?? '';
+                    if (messageIndex && compareMessageIndex(messageIndex, prev) > 0) {
+                      lastToolMessageIndexRef.current.set(agentId, messageIndex);
+                    }
+                    console.debug(
+                      `[wab] stale call-tool force agent=${agentId} index=${messageIndex} len=${text.length}`
+                    );
+                    await handleAgentResponseRef.current(agentId, text, '', {
+                      force: true,
+                      messageIndex,
+                    });
                   }
-                  console.debug(
-                    `[wab] stale call-tool force agent=${agentId} index=${messageIndex} len=${text.length}`
-                  );
-                  await handleAgentResponseRef.current(agentId, text, '', {
-                    force: true,
-                    messageIndex,
-                  });
                 }
               }
-            }
-            const busyAfterForce =
-              [...inflightToolOpsRef.current].some((k) => k.startsWith(`${agentId}:`)) ||
-              pendingPowershellDecisionRef.current.has(agentId);
-            if (!busyAfterForce) {
-              setAgentStatus(agentId, 'idle');
+              const busyAfterForce =
+                [...inflightToolOpsRef.current].some((k) => k.startsWith(`${agentId}:`)) ||
+                pendingPowershellDecisionRef.current.has(agentId);
+              if (!busyAfterForce) {
+                setAgentStatus(agentId, 'idle');
+              }
             }
           }
+        } finally {
+          waitingPollInFlightRef.current = false;
         }
       })();
     }, 1000);

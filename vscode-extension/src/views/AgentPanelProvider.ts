@@ -14,6 +14,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'webAgentBridge.panel';
   private view?: vscode.WebviewView;
   private uiSub?: vscode.Disposable;
+  /** 合并同帧多次 UI 变更，避免流式时侧栏整页连发 */
+  private postSnapshotTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -155,6 +157,14 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private postSnapshot(): void {
+    if (this.postSnapshotTimer) return;
+    this.postSnapshotTimer = setTimeout(() => {
+      this.postSnapshotTimer = undefined;
+      this.flushSnapshot();
+    }, 32);
+  }
+
+  private flushSnapshot(): void {
     if (!this.view) return;
     this.view.webview.postMessage({
       type: 'snapshot',

@@ -69,8 +69,22 @@ export class AgentHostBridge implements IAgentBridge {
   private polling = false;
   private stopPoll = false;
   private created = new Set<string>();
+  /** 按 agent 串行执行工具，不挡全局事件 cursor */
+  private toolQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly host: AgentHostProcess) {}
+
+  /** 同 agent 串行入队；入队后立即返回 */
+  private enqueueTool(agentId: string, work: () => Promise<void>): void {
+    const previous = this.toolQueues.get(agentId) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(work);
+    this.toolQueues.set(agentId, current);
+    void current.finally(() => {
+      if (this.toolQueues.get(agentId) === current) {
+        this.toolQueues.delete(agentId);
+      }
+    });
+  }
 
   startEventLoop(): void {
     if (this.polling) return;
@@ -153,21 +167,24 @@ export class AgentHostBridge implements IAgentBridge {
           if (!isToolResponse) throw error;
         }
       }
-      // 仅空 key 的 Host 工具响应路径触发工具；普通会话 key 只更新对话
+      // 空 key 工具：入队后立即推进 cursor，按 agent 串行执行
       if (isToolResponse) {
         if (!this.responseHandler) {
           throw new Error(`Response handler is not registered for agent ${agentId}`);
         }
-        console.debug(`[wab-events] callback start responseHandler ${this.eventContext(ev)}`);
-        try {
-          await this.responseHandler(agentId, text, key, messageIndex);
-          console.debug(`[wab-events] callback complete responseHandler ${this.eventContext(ev)}`);
-        } catch (error) {
-          console.error(
-            `[wab-events] callback failed responseHandler ${this.eventContext(ev)}: ${errorMessage(error)}`
-          );
-          throw error;
-        }
+        const handler = this.responseHandler;
+        const context = this.eventContext(ev);
+        this.enqueueTool(agentId, async () => {
+          console.debug(`[wab-events] callback start responseHandler ${context}`);
+          try {
+            await handler(agentId, text, key, messageIndex);
+            console.debug(`[wab-events] callback complete responseHandler ${context}`);
+          } catch (error) {
+            console.error(
+              `[wab-events] callback failed responseHandler ${context}: ${errorMessage(error)}`
+            );
+          }
+        });
       }
       return;
     }

@@ -141,6 +141,8 @@ export class AgentSession {
   >();
   private lastPollSnapshots = new Map<string, BridgePollSnapshot>();
   private waitingPollTimer?: ReturnType<typeof setInterval>;
+  /** 上一轮 waiting 轮询未完成则跳过本拍 */
+  private pollingInFlight = false;
   /** 对话同步去重：agentId:role:key */
   private loggedChatKeys = new Set<string>();
   private loggedAgentTexts = new Map<string, string>();
@@ -207,11 +209,12 @@ export class AgentSession {
   private async saveChatLog(
     agentId: string,
     role: 'user' | 'agent',
-    content: string
+    content: string,
+    opts?: { growing?: boolean }
   ): Promise<void> {
     const agentName = this.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
     try {
-      await this.conversationLogs.addChatEntry(role, agentId, agentName, content);
+      await this.conversationLogs.addChatEntry(role, agentId, agentName, content, opts);
     } catch (err) {
       void vscode.window.showErrorMessage(
         `保存日志失败: ${err instanceof Error ? err.message : String(err)}`
@@ -309,76 +312,95 @@ export class AgentSession {
   }
 
   private async pollWaitingStatuses(): Promise<void> {
-    const ids = new Set<string>([
-      ...this.agents.map((a) => a.id),
-      ...Object.keys(this.statuses),
-    ]);
-    for (const agentId of ids) {
-      const status = this.statuses[agentId];
-      if (status === 'error' || status === 'sending') continue;
+    if (this.pollingInFlight) return;
+    this.pollingInFlight = true;
+    try {
+      const ids = new Set<string>([
+        ...this.agents.map((a) => a.id),
+        ...Object.keys(this.statuses),
+      ]);
+      for (const agentId of ids) {
+        const status = this.statuses[agentId];
+        if (status === 'error' || status === 'sending') continue;
 
-      if (this.composerInitPending.has(agentId)) {
-        this.setStatus(agentId, 'waiting');
-        continue;
-      }
+        const hasInflight = [...this.inflightToolOps].some((k) =>
+          k.startsWith(`${agentId}:`)
+        );
+        const hasPendingPs = this.pendingDecisions.has(agentId);
+        const initPending = this.composerInitPending.has(agentId);
+        // 只轮询活跃：waiting / inflight / composerInit
+        if (
+          status !== 'waiting' &&
+          !hasInflight &&
+          !hasPendingPs &&
+          !initPending
+        ) {
+          continue;
+        }
 
-      if (this.stoppedUntilNextSend.has(agentId)) {
-        if (status !== 'idle') this.setStatus(agentId, 'idle');
-        continue;
-      }
+        if (initPending) {
+          this.setStatus(agentId, 'waiting');
+          continue;
+        }
 
-      const hasInflight = [...this.inflightToolOps].some((k) =>
-        k.startsWith(`${agentId}:`)
-      );
-      const hasPendingPs = this.pendingDecisions.has(agentId);
-      if (hasInflight || hasPendingPs) {
-        this.setStatus(agentId, 'waiting');
-        continue;
-      }
+        if (this.stoppedUntilNextSend.has(agentId)) {
+          if (status !== 'idle') this.setStatus(agentId, 'idle');
+          continue;
+        }
 
-      const snap = await this.bridge.getPollSnapshot(agentId);
-      const previousSnapshot = this.lastPollSnapshots.get(agentId);
-      if (
-        previousSnapshot &&
-        this.updateGrowingAgentReply(agentId, previousSnapshot, snap)
-      ) {
-        const latest = [...this.chats]
-          .reverse()
-          .find((chat) => chat.agentId === agentId && chat.role === 'agent');
-        if (latest) await this.saveChatLog(agentId, 'agent', latest.text);
-        this.notify();
-      }
-      this.lastPollSnapshots.set(agentId, snap);
-      this.clearAutoContinueIfAgentReplied(agentId, snap);
+        if (hasInflight || hasPendingPs) {
+          this.setStatus(agentId, 'waiting');
+          continue;
+        }
 
-      const fingerprint = pollSnapshotFingerprint(snap);
-      let watch = this.waitingWatch.get(agentId);
-      if (!watch) {
-        watch = {
-          fingerprint,
-          changeSince: snap.loading ? Date.now() : Date.now() - 3000,
-        };
-        this.waitingWatch.set(agentId, watch);
-      } else if (fingerprint !== watch.fingerprint) {
-        watch.fingerprint = fingerprint;
-        watch.changeSince = Date.now();
-      }
+        const snap = await this.bridge.getPollSnapshot(agentId);
+        const previousSnapshot = this.lastPollSnapshots.get(agentId);
+        if (
+          previousSnapshot &&
+          this.updateGrowingAgentReply(agentId, previousSnapshot, snap)
+        ) {
+          const latest = [...this.chats]
+            .reverse()
+            .find((chat) => chat.agentId === agentId && chat.role === 'agent');
+          if (latest) {
+            void this.saveChatLog(agentId, 'agent', latest.text, { growing: true });
+          }
+          this.notify();
+        }
+        this.lastPollSnapshots.set(agentId, snap);
+        this.clearAutoContinueIfAgentReplied(agentId, snap);
 
-      if (snap.loading || Date.now() - watch.changeSince < 3000) {
-        this.setStatus(agentId, 'waiting');
-      } else if (status === 'waiting') {
-        // waiting 结束：兜底强制未执行的 call-tool
-        await this.maybeForceStaleCallTool(agentId, snap);
-        const busyAfterForce =
-          [...this.inflightToolOps].some((k) => k.startsWith(`${agentId}:`)) ||
-          this.pendingDecisions.has(agentId);
-        if (!busyAfterForce) {
-          const sentContinue = await this.maybeSendStallContinue(agentId, snap);
-          if (!sentContinue) {
-            this.setStatus(agentId, 'idle');
+        const fingerprint = pollSnapshotFingerprint(snap);
+        let watch = this.waitingWatch.get(agentId);
+        if (!watch) {
+          watch = {
+            fingerprint,
+            changeSince: snap.loading ? Date.now() : Date.now() - 3000,
+          };
+          this.waitingWatch.set(agentId, watch);
+        } else if (fingerprint !== watch.fingerprint) {
+          watch.fingerprint = fingerprint;
+          watch.changeSince = Date.now();
+        }
+
+        if (snap.loading || Date.now() - watch.changeSince < 3000) {
+          this.setStatus(agentId, 'waiting');
+        } else if (status === 'waiting') {
+          // waiting 结束：兜底强制未执行的 call-tool
+          await this.maybeForceStaleCallTool(agentId, snap);
+          const busyAfterForce =
+            [...this.inflightToolOps].some((k) => k.startsWith(`${agentId}:`)) ||
+            this.pendingDecisions.has(agentId);
+          if (!busyAfterForce) {
+            const sentContinue = await this.maybeSendStallContinue(agentId, snap);
+            if (!sentContinue) {
+              this.setStatus(agentId, 'idle');
+            }
           }
         }
       }
+    } finally {
+      this.pollingInFlight = false;
     }
   }
 
@@ -486,15 +508,18 @@ export class AgentSession {
   }
 
   getSnapshot() {
+    const activeId = this.activeAgentId;
     return {
       agents: this.agents,
-      activeAgentId: this.activeAgentId,
+      activeAgentId: activeId,
       statuses: { ...this.statuses },
       chats: this.chats
         .filter((c) => !c.text.trimStart().startsWith(SYSTEM_MARKER))
         .slice(-200)
         .map((c) => {
           if (c.role !== 'agent') return c;
+          // displayParts 只算当前 tab，避免非活动站点流式时反复拆解
+          if (c.agentId !== activeId) return c;
           return {
             ...c,
             displayParts: splitCallToolDisplayParts(
@@ -686,7 +711,8 @@ export class AgentSession {
       if (!this.acceptSyncedChat(agentId, role, key, text, { loading: meta?.loading })) {
         return;
       }
-      await this.saveChatLog(agentId, role, text);
+      // 落盘不挡事件分发；生长中由日志服务节流
+      void this.saveChatLog(agentId, role, text, { growing: meta?.loading === true });
       // 转圈由 waiting 轮询根据 pollSnapshot 决定，聊天同步不主动置 idle
       this.notify();
     });

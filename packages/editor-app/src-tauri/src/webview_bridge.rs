@@ -1335,9 +1335,6 @@ fn process_bridge_response_sync(
                     stable_ms
                 };
                 if now.duration_since(*since) >= Duration::from_millis(required_stable) {
-                    sync_state.last_emitted_bridge_text = meta.text.clone();
-                    sync_state.bridge_baseline = meta.text.clone();
-                    sync_state.bridge_stable_tracker = None;
                     ready = Some((meta.text.clone(), meta.key.clone()));
                 }
             }
@@ -1350,10 +1347,24 @@ fn process_bridge_response_sync(
     if let Some((text, message_index)) = ready {
         eprintln!("[bridge-sync] emit agent={agent_id} len={}", text.len());
         let state = app.state::<WebviewState>();
-        if let Err(err) =
-            store_and_emit_agent_response(app, state.inner(), agent_id, &text, &message_index)
-        {
-            eprintln!("[bridge-sync] emit failed: {err}");
+        match store_and_emit_agent_response(app, state.inner(), agent_id, &text, &message_index) {
+            Ok(()) => match state.sync_states.lock() {
+                Ok(mut sync_states) => {
+                    if let Some(sync_state) = sync_states.get_mut(agent_id) {
+                        if sync_state
+                            .bridge_stable_tracker
+                            .as_ref()
+                            .is_some_and(|(candidate, _)| candidate == &text)
+                        {
+                            sync_state.last_emitted_bridge_text = text.clone();
+                            sync_state.bridge_baseline = text;
+                            sync_state.bridge_stable_tracker = None;
+                        }
+                    }
+                }
+                Err(err) => eprintln!("[bridge-sync] state commit failed: {err}"),
+            },
+            Err(err) => eprintln!("[bridge-sync] emit failed: {err}"),
         }
     }
 }
@@ -1430,7 +1441,9 @@ if (window.__agentEditorBridge) {
 }
 
 async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String) {
-    let poll_interval_ms = 1000u64;
+    let idle_poll_ms = 1000u64;
+    let loading_poll_ms = 400u64;
+    let mut poll_interval_ms = idle_poll_ms;
     let stable_ms = 1500u64;
 
     ensure_bridge_injected(&app, &label, &agent_id).await;
@@ -1468,6 +1481,7 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
         // 静默 Host：webview 不在 visible_labels，仍需同步工具
         let must_sync = crate::is_agent_host_mode() || is_webview_visible(&state, &label);
         if !must_sync {
+            poll_interval_ms = idle_poll_ms;
             continue;
         }
 
@@ -1476,31 +1490,16 @@ async fn sync_conversation_task(app: AppHandle, label: String, agent_id: String)
         let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
         let snap = parse_poll_snapshot(&raw);
         let conversation_empty = snap.last_user.is_none() && snap.last_agent.is_none();
+        // loading 时缩短间隔，不另开 watch 任务
+        poll_interval_ms = if snap.loading {
+            loading_poll_ms
+        } else {
+            idle_poll_ms
+        };
 
         emit_snapshot_conversation(&app, &agent_id, &snap, stable_ms);
         process_bridge_response_sync(&app, &agent_id, &snap, stable_ms, conversation_empty);
     }
-}
-
-fn start_bridge_response_watch(app: &AppHandle, label: String, agent_id: String) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let stable_ms = 1200u64;
-        let poll_ms = 1000u64;
-        for _ in 0..225 {
-            async_delay(poll_ms).await;
-            if !agent_webview_alive(&app, &label) {
-                break;
-            }
-            let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
-            let snap = parse_poll_snapshot(&raw);
-            let conversation_empty = snap.last_user.is_none() && snap.last_agent.is_none();
-            let _ = eval_webview_json(&app, &label, BRIDGE_SCHEDULE_COPY_EXPR);
-            flush_bridge_queues(&app, &label, &agent_id);
-            emit_snapshot_conversation(&app, &agent_id, &snap, stable_ms);
-            process_bridge_response_sync(&app, &agent_id, &snap, stable_ms, conversation_empty);
-        }
-    });
 }
 
 fn start_conversation_sync(app: &AppHandle, label: String, agent_id: String) {
@@ -1934,7 +1933,6 @@ if (window.__agentEditorBridge) {{
 
     webview.eval(&script).map_err(|e| e.to_string())?;
     reset_bridge_baseline_on_send(&app, &label, &agent_id);
-    start_bridge_response_watch(&app, label, agent_id);
     Ok(())
 }
 
@@ -1955,7 +1953,6 @@ pub async fn click_agent_send(app: AppHandle, agent_id: String) -> Result<(), St
 "#;
     webview.eval(script).map_err(|e| e.to_string())?;
     reset_bridge_baseline_on_send(&app, &label, &agent_id);
-    start_bridge_response_watch(&app, label, agent_id);
     Ok(())
 }
 
