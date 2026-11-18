@@ -4,20 +4,36 @@ import * as path from 'node:path';
 import * as http from 'node:http';
 import * as fs from 'node:fs';
 
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 131 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
 export class AgentHostProcess {
   private child?: ChildProcess;
   private readonly token: string;
+  private readonly sessionId: string;
   private readonly port: number;
+  private readonly debugPort: number;
   private started = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     const cfg = vscode.workspace.getConfiguration('webAgentBridge');
+    this.sessionId = vscode.env.sessionId || `vscode-${process.pid}-${Date.now()}`;
     this.token = cfg.get<string>('hostToken') || 'dev-token';
-    this.port = cfg.get<number>('hostPort', 9791);
+    this.port = this.resolveDynamicPort(cfg.get<number>('hostPort', 9791), 9791);
+    this.debugPort = this.resolveDynamicPort(cfg.get<number>('debugPort', 9782), 9782);
   }
 
   getPort(): number {
     return this.port;
+  }
+
+  getDebugPort(): number {
+    return this.debugPort;
   }
 
   getToken(): string {
@@ -36,6 +52,14 @@ export class AgentHostProcess {
     await this.start();
     await this.waitHealthy(60000);
     this.started = true;
+  }
+
+  private resolveDynamicPort(configured: number | undefined, fallback: number): number {
+    const base = Number.isFinite(configured) ? Number(configured) : fallback;
+    const offset = hashString(this.sessionId) % 2000;
+    const normalized = Math.max(1024, Math.min(base, 65535));
+    const candidate = normalized + ((offset + 1) % 2000);
+    return candidate > 65535 ? normalized + ((offset + 1) % (65535 - normalized)) : candidate;
   }
 
   private resolveHostCwd(): string {
@@ -88,6 +112,7 @@ export class AgentHostProcess {
         ...process.env,
         AGENT_HOST: '1',
         AGENT_HOST_PORT: String(this.port),
+        AGENT_HOST_SESSION_ID: this.sessionId,
         AGENT_HOST_TOKEN: this.token,
       };
 
@@ -113,11 +138,13 @@ export class AgentHostProcess {
     });
   }
 
-  private healthOk(): Promise<boolean> {
-    return this.request('GET', '/events?after=0').then(
-      () => true,
-      () => false
-    );
+  private async healthOk(): Promise<boolean> {
+    try {
+      const json = (await this.request('GET', '/health')) as { sessionId?: string };
+      return !!json && json.sessionId === this.sessionId;
+    } catch {
+      return false;
+    }
   }
 
   private async waitHealthy(timeoutMs: number): Promise<void> {
@@ -141,6 +168,7 @@ export class AgentHostProcess {
           headers: {
             'Content-Type': 'application/json',
             'X-Agent-Host-Token': this.token,
+            'X-Agent-Host-Session': this.sessionId,
             ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
           },
           timeout: 15000,

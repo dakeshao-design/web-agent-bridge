@@ -35,8 +35,7 @@ export function startExtensionDebugServer(
   context: vscode.ExtensionContext,
   { session, host }: DebugServerOptions
 ): vscode.Disposable {
-  const config = vscode.workspace.getConfiguration('webAgentBridge');
-  const port = Number(process.env.WAB_DEBUG_PORT) || config.get<number>('debugPort', 9782);
+  const port = Number(process.env.WAB_DEBUG_PORT) || host.getDebugPort();
   const token = host.getToken();
 
   const server = http.createServer((request, response) => {

@@ -11,8 +11,8 @@ use crate::webview_bridge::{
     agent_bridge_is_loading, agent_bridge_poll_snapshot, click_agent_stop, create_agent_webview,
     debug_eval_composer_ready, debug_query_agent, debug_query_bridge_response,
     debug_query_last_file_op, debug_reset_sync, fill_agent_message, hide_agent_webview,
-    new_agent_chat_session, send_agent_message, show_agent_webview, WebviewBounds,
-    WebviewState,
+    new_agent_chat_session, send_agent_message, session_agent_label, show_agent_webview,
+    WebviewBounds, WebviewState,
 };
 
 const DEFAULT_PORT: &str = "9791";
@@ -206,7 +206,10 @@ fn handle(
     body: &str,
 ) -> Result<Response<std::io::Cursor<Vec<u8>>>, String> {
     match (method, path) {
-        (Method::Get, "/health") => json_ok(json!({ "ok": true, "mode": "agent-host" })),
+        (Method::Get, "/health") => {
+            let session_id = std::env::var("AGENT_HOST_SESSION_ID").unwrap_or_else(|_| "default-session".into());
+            json_ok(json!({ "ok": true, "mode": "agent-host", "sessionId": session_id }))
+        }
         (Method::Get, "/debug/status") => {
             let state = app.state::<WebviewState>();
             let webviews = state
@@ -245,7 +248,7 @@ fn handle(
         }
         (Method::Get, "/debug/composer-ready") => {
             let agent_id = debug_agent_id(url)?;
-            let label = format!("agent-{}", agent_id);
+            let label = session_agent_label(&agent_id);
             let ready = debug_eval_composer_ready(app, &label);
             json_ok(json!({ "ok": true, "agentId": agent_id, "ready": ready }))
         }
@@ -278,7 +281,7 @@ fn handle(
             if payload.agent_id.is_empty() || payload.url.is_empty() {
                 return Err("agentId and url are required".into());
             }
-            let label = format!("agent-{}", payload.agent_id);
+            let label = session_agent_label(&payload.agent_id);
             let bounds = payload.bounds.unwrap_or(WebviewBounds {
                 x: 0.0,
                 y: 0.0,
@@ -326,7 +329,7 @@ fn handle(
             if payload.agent_id.is_empty() {
                 return Err("agentId is required".into());
             }
-            let label = format!("agent-{}", payload.agent_id);
+            let label = session_agent_label(&payload.agent_id);
             let bounds = payload.bounds.unwrap_or(WebviewBounds {
                 x: 40.0,
                 y: 40.0,
@@ -344,7 +347,7 @@ fn handle(
             if payload.agent_id.is_empty() {
                 return Err("agentId is required".into());
             }
-            let label = format!("agent-{}", payload.agent_id);
+            let label = session_agent_label(&payload.agent_id);
             let app2 = app.clone();
             tauri::async_runtime::block_on(async move {
                 hide_agent_webview(app2, label).await
@@ -356,7 +359,7 @@ fn handle(
             if payload.agent_id.is_empty() || payload.text.is_empty() {
                 return Err("agentId and text are required".into());
             }
-            let label = format!("agent-{}", payload.agent_id);
+            let label = session_agent_label(&payload.agent_id);
             let app2 = app.clone();
             let agent_id = payload.agent_id.clone();
             let text = payload.text.clone();
@@ -370,7 +373,7 @@ fn handle(
             if payload.agent_id.is_empty() {
                 return Err("agentId is required".into());
             }
-            let label = format!("agent-{}", payload.agent_id);
+            let label = session_agent_label(&payload.agent_id);
             let app2 = app.clone();
             let agent_id = payload.agent_id.clone();
             let text = payload.text.clone();
@@ -434,7 +437,7 @@ fn handle(
             if agent_id.is_empty() {
                 return Err("agentId is required".into());
             }
-            let label = format!("agent-{}", agent_id);
+            let label = session_agent_label(&agent_id);
             let ready = debug_eval_composer_ready(app, &label);
             json_ok(json!({ "ok": true, "ready": ready }))
         }
