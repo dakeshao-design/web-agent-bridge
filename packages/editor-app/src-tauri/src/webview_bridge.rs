@@ -181,6 +181,21 @@ fn is_host_window_silent(app: &AppHandle, label: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn session_agent_label(agent_id: &str) -> String {
+    let prefix = std::env::var("AGENT_HOST_SESSION_ID").unwrap_or_else(|_| "default-session".to_string());
+    if prefix.is_empty() || prefix == "default-session" {
+        return format!("agent-{}", agent_id);
+    }
+    format!("{}-agent-{}", prefix, agent_id)
+}
+
+pub fn agent_id_from_label(label: &str) -> &str {
+    if let Some((_, agent_id)) = label.rsplit_once("-agent-") {
+        return agent_id;
+    }
+    label.strip_prefix("agent-").unwrap_or(label)
+}
+
 fn mark_agent_webview_gone(app: &AppHandle, label: &str) {
     let state = app.state::<WebviewState>();
     if let Ok(mut webviews) = state.webviews.lock() {
@@ -195,10 +210,7 @@ fn mark_agent_webview_gone(app: &AppHandle, label: &str) {
     if let Ok(mut onload) = state.onload_new_chat_started.lock() {
         onload.remove(label);
     }
-    let agent_id = label
-        .strip_prefix("agent-")
-        .unwrap_or(label)
-        .to_string();
+    let agent_id = agent_id_from_label(label).to_string();
     let _ = app.emit(
         "agent-webview-closed",
         json!({ "agentId": agent_id, "label": label }),
@@ -1370,7 +1382,7 @@ fn process_bridge_response_sync(
 }
 
 fn eval_latest_response_meta(app: &AppHandle, agent_id: &str) -> Option<BridgeResponseMeta> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(agent_id);
     let raw = eval_webview_json(app, &label, LATEST_RESPONSE_META_EXPR).ok()?;
     if raw.is_empty() || raw == "null" || raw == "undefined" {
         return None;
@@ -1859,10 +1871,7 @@ pub async fn show_agent_webview(
         Ok(())
     })?;
 
-    let agent_id = label
-        .strip_prefix("agent-")
-        .unwrap_or(&label)
-        .to_string();
+    let agent_id = crate::webview_bridge::agent_id_from_label(&label).to_string();
     start_conversation_sync(&app, label, agent_id);
     Ok(())
 }
@@ -1938,7 +1947,7 @@ if (window.__agentEditorBridge) {{
 
 #[tauri::command]
 pub async fn click_agent_send(app: AppHandle, agent_id: String) -> Result<(), String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("Webview not found: {}", label))?;
@@ -1959,7 +1968,7 @@ pub async fn click_agent_send(app: AppHandle, agent_id: String) -> Result<(), St
 /// 点击站点停止钮；不重置 baseline、不启动回复监视
 #[tauri::command]
 pub async fn click_agent_stop(app: AppHandle, agent_id: String) -> Result<(), String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("Webview not found: {}", label))?;
@@ -1991,7 +2000,7 @@ pub async fn push_agent_bridge_config(
     type_strategy: Option<String>,
     wait_before_send: Option<i64>,
 ) -> Result<(), String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     let webview = app
         .get_webview(&label)
         .ok_or_else(|| format!("Webview not found: {}", label))?;
@@ -2088,14 +2097,14 @@ pub async fn reset_agent_bridge_tracking(
     app: AppHandle,
     agent_id: String,
 ) -> Result<(), String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     reset_bridge_baseline_on_send(&app, &label, &agent_id);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn agent_composer_ready(app: AppHandle, agent_id: String) -> Result<bool, String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     Ok(debug_eval_composer_ready(&app, &label))
 }
 
@@ -2107,7 +2116,7 @@ pub fn debug_eval_composer_ready(app: &AppHandle, label: &str) -> bool {
 
 #[tauri::command]
 pub async fn new_agent_chat_session(app: AppHandle, agent_id: String) -> Result<(), String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     let start_raw = eval_webview_json(&app, &label, BRIDGE_START_NEW_CHAT_EXPR)?;
     // WebView2 回传可能多层 JSON 字符串，需 deep parse
     let start = parse_json_value_deep(&start_raw).unwrap_or_else(|| json!({ "ok": false }));
@@ -2158,7 +2167,7 @@ pub async fn store_agent_response(
 
 #[tauri::command]
 pub async fn agent_bridge_is_loading(app: AppHandle, agent_id: String) -> Result<bool, String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     let raw = eval_webview_json(&app, &label, BRIDGE_IS_LOADING_EXPR).unwrap_or_else(|_| "false".to_string());
     Ok(raw.trim() == "true")
 }
@@ -2175,7 +2184,7 @@ pub async fn agent_bridge_poll_snapshot(
     app: AppHandle,
     agent_id: String,
 ) -> Result<serde_json::Value, String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(&agent_id);
     let raw = eval_webview_json(&app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
     let snap = parse_poll_snapshot(&raw);
     Ok(json!({
@@ -2213,7 +2222,7 @@ pub async fn poll_agent_response(
 }
 
 pub fn debug_query_agent(app: &AppHandle, agent_id: &str) -> Result<serde_json::Value, String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(agent_id);
     let webview_exists = app.get_webview(&label).is_some();
 
     let state = app.state::<WebviewState>();
@@ -2320,7 +2329,7 @@ pub fn debug_reset_sync(app: &AppHandle, agent_id: &str) -> Result<(), String> {
 const LAST_FILE_OP_EXPR: &str = "JSON.stringify(window.__agentEditorLastFileOp||null)";
 
 pub fn debug_query_bridge_response(app: &AppHandle, agent_id: &str) -> Result<serde_json::Value, String> {
-    let label = format!("agent-{}", agent_id);
+    let label = session_agent_label(agent_id);
     let raw = eval_webview_json(app, &label, POLL_SNAPSHOT_EXPR).unwrap_or_default();
     let snap = parse_poll_snapshot(&raw);
     let parsed = snapshot_to_response_meta(&snap);

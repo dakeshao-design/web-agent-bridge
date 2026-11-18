@@ -3,8 +3,8 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 use crate::webview_bridge::{
-    debug_eval_composer_ready, debug_query_agent, debug_query_bridge_response, debug_query_last_file_op,
-    debug_reset_sync, WebviewState,
+    debug_query_agent, debug_query_bridge_response, debug_query_last_file_op, debug_reset_sync,
+    WebviewState,
 };
 
 const HELP_TEXT: &str = r#"WebAgent Debug CLI (HTTP)
@@ -132,7 +132,7 @@ fn handle_request(
         }
         (Method::Get, "/debug/composer-ready") => {
             let agent_id = required_agent_id(&query, &body)?;
-            let label = format!("agent-{}", agent_id);
+            let label = crate::webview_bridge::session_agent_label(&agent_id);
             let raw = crate::webview_bridge::debug_eval_composer_ready(app, &label);
             json_ok(json!({ "ok": true, "agentId": agent_id, "ready": raw }))
         }
